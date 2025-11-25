@@ -1,5 +1,6 @@
 import type { Company, CompanyOverview, StockQuote, FinancialMetrics } from '@/types';
 import { databaseService } from './databaseService';
+import { offlineDataService } from './offlineDataService';
 
 // Alpha Vantage API
 const ALPHA_VANTAGE_KEY = '32ZVJQ51SCJUUZZR';
@@ -19,28 +20,118 @@ class FinanceApiService {
     await this.ensureInitialized();
 
     try {
-      // Check SQLite cache first
-      const cached = await databaseService.getSearchCache(query);
+      // Check SQLite cache first (with AsyncStorage fallback)
+      let cached: Company[] | null = null;
+      try {
+        cached = await databaseService.getSearchCache(query);
+      } catch (dbErr) {
+        console.warn('SQLite search cache read failed, falling back to AsyncStorage', dbErr);
+      }
+
       if (cached) {
         console.log('✅ Using cached search results from SQLite');
         return cached;
       }
 
+      // Try AsyncStorage cached search results before calling API
+      try {
+        const asCached = await offlineDataService.getCachedSearchResults(query);
+        if (asCached && asCached.length > 0) {
+          console.log('✅ Using cached search results from AsyncStorage');
+          return asCached;
+        }
+      } catch (asErr) {
+        console.warn('AsyncStorage search read failed', asErr);
+      }
+
       const url = `${ALPHA_VANTAGE_URL}?function=SYMBOL_SEARCH&keywords=${encodeURIComponent(query)}&apikey=${ALPHA_VANTAGE_KEY}`;
       console.log('🔍 Searching Alpha Vantage API');
-      
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
-      const response = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeoutId);
-      
-      const data = await response.json();
 
-      // Check for API errors or rate limits
-      if (data['Error Message'] || data['Note']) {
-        console.error('❌ Alpha Vantage Error:', data['Error Message'] || data['Note']);
-        return cached || [];
+      // Helper to detect fetch aborts
+      const isAbortError = (err: any) => {
+        return err && (err.name === 'AbortError' || (typeof err.message === 'string' && err.message.includes('Aborted')));
+      };
+
+      const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+      // Attempt fetch with a small retry/backoff for transient network failures
+      const maxRetries = 2;
+      let attempt = 0;
+      let data: any = null;
+      let lastError: any = null;
+
+      while (attempt <= maxRetries) {
+        attempt += 1;
+        const controller = new AbortController();
+        const timeoutMs = 7000; // slightly larger timeout
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+          const response = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeoutId);
+
+          // If non-OK, treat as error (avoid repeated retries when rate limited)
+          if (!response.ok) {
+            const txt = await response.text().catch(() => '');
+            throw new Error(`HTTP ${response.status} ${txt}`);
+          }
+
+          data = await response.json();
+
+          // If API returns rate-limit note or error message, do not retry
+          if (data['Note'] || data['Error Message']) {
+            console.error('❌ Alpha Vantage Error:', data['Error Message'] || data['Note']);
+            // ensure we don't attempt further retries
+            lastError = data['Note'] || data['Error Message'];
+            break;
+          }
+
+          // Successful response
+          break;
+        } catch (err) {
+          clearTimeout(timeoutId);
+          lastError = err;
+
+          // If abort (timeout) — bail out and use cache if available
+          if (isAbortError(err)) {
+            console.warn('⏱️ Search aborted (timeout). Will use cached results if available.', err);
+            break;
+          }
+
+          // If we've exhausted retries, break and fall through to fallback logic
+          if (attempt > maxRetries) {
+            console.error('Fetch failed after retries:', err);
+            break;
+          }
+
+          // Backoff then retry
+          const backoff = 500 * Math.pow(2, attempt - 1);
+          console.warn(`Fetch attempt ${attempt} failed, retrying in ${backoff}ms...`, err);
+          // small sleep before retry
+          // eslint-disable-next-line no-await-in-loop
+          await sleep(backoff);
+          continue;
+        }
+      }
+
+      // If we didn't get valid data from API, try to use cached results
+      if (!data) {
+        if (lastError && (typeof lastError === 'object') && (lastError['Note'] || lastError['Error Message'])) {
+          // Rate limit response which we already logged — prefer cached
+        }
+
+        // if we have cached (SQLite) return it
+        if (cached) return cached;
+        // try AsyncStorage cached search results
+        try {
+          const asCached = await offlineDataService.getCachedSearchResults(query);
+          if (asCached && asCached.length > 0) return asCached;
+        } catch (asErr) {
+          console.warn('AsyncStorage search read failed during API fallback', asErr);
+        }
+
+        // nothing left — return empty
+        return [];
       }
 
       // Parse results
@@ -55,8 +146,17 @@ class FinanceApiService {
         
         console.log('✅ Found companies from API:', companies.length);
         
-        // Save to SQLite
-        await databaseService.saveSearchCache(query, companies);
+        // Save to SQLite (best-effort) and AsyncStorage as fallback
+        try {
+          await databaseService.saveSearchCache(query, companies);
+        } catch (saveErr) {
+          console.warn('Saving search cache to SQLite failed, caching to AsyncStorage instead', saveErr);
+          try {
+            await offlineDataService.cacheSearchResults(query, companies as any[]);
+          } catch (asErr) {
+            console.warn('Caching search results to AsyncStorage failed', asErr);
+          }
+        }
         
         return companies;
       }
@@ -64,8 +164,22 @@ class FinanceApiService {
       return cached || [];
     } catch (error) {
       console.error('❌ Error searching companies:', error);
-      const cached = await databaseService.getSearchCache(query);
-      return cached || [];
+      // Try SQLite first, then AsyncStorage
+      try {
+        const cached = await databaseService.getSearchCache(query);
+        if (cached) return cached;
+      } catch (dbErr) {
+        console.warn('SQLite search cache read failed in error handler', dbErr);
+      }
+
+      try {
+        const asCached = await offlineDataService.getCachedSearchResults(query);
+        if (asCached) return asCached;
+      } catch (asErr) {
+        console.warn('AsyncStorage search read failed in error handler', asErr);
+      }
+
+      return [];
     }
   }
 
@@ -75,10 +189,27 @@ class FinanceApiService {
 
     try {
       // Check SQLite cache first (fresh if < 24h)
-      const cached = await databaseService.getStockQuote(symbol);
+      let cached: StockQuote | null = null;
+      try {
+        cached = await databaseService.getStockQuote(symbol);
+      } catch (dbErr) {
+        console.warn('SQLite quote read failed, falling back to AsyncStorage', dbErr);
+      }
+
       if (cached) {
         console.log('✅ Using cached quote from SQLite');
         return cached;
+      }
+
+      // Try AsyncStorage cached quote before calling API
+      try {
+        const asCached = await offlineDataService.getCachedQuote(symbol);
+        if (asCached) {
+          console.log('✅ Using cached quote from AsyncStorage');
+          return asCached;
+        }
+      } catch (asErr) {
+        console.warn('AsyncStorage quote read failed', asErr);
       }
 
       const url = `${ALPHA_VANTAGE_URL}?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
@@ -89,7 +220,21 @@ class FinanceApiService {
 
       if (data['Note']) {
         console.log('⚠️ Rate limit - checking old cache');
-        return await databaseService.getStockQuote(symbol, Infinity) || this.getMockStockQuote(symbol);
+        try {
+          const oldCached = await databaseService.getStockQuote(symbol, Infinity);
+          if (oldCached) return oldCached;
+        } catch (dbErr) {
+          console.warn('SQLite old-quote read failed during rate limit handling', dbErr);
+        }
+
+        try {
+          const asOld = await offlineDataService.getCachedQuote(symbol);
+          if (asOld) return asOld;
+        } catch (asErr) {
+          console.warn('AsyncStorage old-quote read failed during rate limit handling', asErr);
+        }
+
+        return this.getMockStockQuote(symbol);
       }
 
       const quote = data['Global Quote'];
@@ -107,9 +252,18 @@ class FinanceApiService {
           timestamp: quote['07. latest trading day'],
         };
 
-        // Save to SQLite
-        await databaseService.saveStockQuote(stockQuote);
-        console.log('✅ Quote saved to SQLite');
+        // Save to SQLite and also cache in AsyncStorage as fallback
+        try {
+          await databaseService.saveStockQuote(stockQuote);
+          console.log('✅ Quote saved to SQLite');
+        } catch (saveErr) {
+          console.warn('Saving quote to SQLite failed, caching to AsyncStorage', saveErr);
+          try {
+            await offlineDataService.cacheQuote(symbol, stockQuote as any);
+          } catch (asErr) {
+            console.warn('Caching quote to AsyncStorage failed', asErr);
+          }
+        }
 
         return stockQuote;
       }
@@ -117,7 +271,21 @@ class FinanceApiService {
       return null;
     } catch (error) {
       console.error('Error fetching stock quote:', error);
-      return await databaseService.getStockQuote(symbol, Infinity);
+      try {
+        const oldCached = await databaseService.getStockQuote(symbol, Infinity);
+        if (oldCached) return oldCached;
+      } catch (dbErr) {
+        console.warn('SQLite old-quote read failed in catch handler', dbErr);
+      }
+
+      try {
+        const asOld = await offlineDataService.getCachedQuote(symbol);
+        if (asOld) return asOld;
+      } catch (asErr) {
+        console.warn('AsyncStorage old-quote read failed in catch handler', asErr);
+      }
+
+      return this.getMockStockQuote(symbol);
     }
   }
 
@@ -221,11 +389,27 @@ class FinanceApiService {
     await this.ensureInitialized();
 
     try {
-      // Check SQLite cache first
-      const cached = await databaseService.getHistoricalData(symbol, range);
+      // Check SQLite cache first (with AsyncStorage fallback)
+      let cached: any[] | null = null;
+      try {
+        cached = await databaseService.getHistoricalData(symbol, range);
+      } catch (dbErr) {
+        console.warn('SQLite historical read failed, falling back to AsyncStorage', dbErr);
+      }
+
       if (cached) {
         console.log('✅ Using cached historical data from SQLite');
         return cached;
+      }
+
+      try {
+        const asCached = await offlineDataService.getCachedChartData(symbol, range);
+        if (asCached) {
+          console.log('✅ Using cached historical data from AsyncStorage');
+          return asCached;
+        }
+      } catch (asErr) {
+        console.warn('AsyncStorage historical read failed', asErr);
       }
 
       const url = `${ALPHA_VANTAGE_URL}?function=TIME_SERIES_DAILY&symbol=${symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
@@ -241,7 +425,21 @@ class FinanceApiService {
       
       if (data['Note'] || data['Error Message']) {
         console.log('⚠️ Rate limit - checking old cache');
-        return await databaseService.getHistoricalData(symbol, range, Infinity) || this.getMockChartData(symbol, range);
+        try {
+          const oldCached = await databaseService.getHistoricalData(symbol, range, Infinity);
+          if (oldCached) return oldCached;
+        } catch (dbErr) {
+          console.warn('SQLite historical old-cache read failed during rate limit handling', dbErr);
+        }
+
+        try {
+          const asOld = await offlineDataService.getCachedChartData(symbol, range);
+          if (asOld) return asOld;
+        } catch (asErr) {
+          console.warn('AsyncStorage historical old-cache read failed during rate limit handling', asErr);
+        }
+
+        return this.getMockChartData(symbol, range);
       }
       
       const timeSeries = data['Time Series (Daily)'];
@@ -266,9 +464,18 @@ class FinanceApiService {
           chartData = chartData.filter(d => d.timestamp >= cutoffDate);
         }
         
-        // Save to SQLite
-        await databaseService.saveHistoricalData(symbol, range, chartData);
-        console.log('✅ Historical data saved to SQLite:', chartData.length, 'points');
+        // Save to SQLite and also cache to AsyncStorage as fallback
+        try {
+          await databaseService.saveHistoricalData(symbol, range, chartData);
+          console.log('✅ Historical data saved to SQLite:', chartData.length, 'points');
+        } catch (saveErr) {
+          console.warn('Saving historical data to SQLite failed, caching to AsyncStorage', saveErr);
+          try {
+            await offlineDataService.cacheChartData(symbol, range, chartData);
+          } catch (asErr) {
+            console.warn('Caching historical data to AsyncStorage failed', asErr);
+          }
+        }
         
         return chartData;
       }

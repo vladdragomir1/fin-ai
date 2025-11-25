@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, Text } from 'react-native';
+import { useNetInfo } from '@react-native-community/netinfo';
 import { WebView } from 'react-native-webview';
 import { palette } from '@/theme';
 
@@ -9,6 +10,17 @@ interface Props {
 }
 
 export const TradingViewChart = ({ symbol, height = 400 }: Props) => {
+  const netInfo = useNetInfo();
+
+  // If offline, show a friendly message instead of attempting the remote widget
+  // Treat undefined/null as offline until NetInfo reports otherwise
+  if (!netInfo?.isConnected) {
+    return (
+      <View style={[styles.container, { height, justifyContent: 'center', alignItems: 'center' }]}>
+        <Text style={styles.offlineText}>Chart not available while offline</Text>
+      </View>
+    );
+  }
   // Comprehensive exchange mapping for major US stocks
   const getExchange = (sym: string): string => {
     // NYSE stocks (New York Stock Exchange)

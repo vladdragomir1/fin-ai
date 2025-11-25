@@ -1,5 +1,6 @@
 import React, { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { DeviceEventEmitter } from 'react-native';
 import type { WatchlistItem } from '@/types';
 
 interface WatchlistContextValue {
@@ -11,20 +12,44 @@ interface WatchlistContextValue {
 
 const WatchlistContext = createContext<WatchlistContextValue | undefined>(undefined);
 
-const WATCHLIST_KEY = '@finai_watchlist';
+const WATCHLIST_KEY_BASE = '@finai_watchlist';
+const STORAGE_KEY_USERNAME = 'username';
 
 export const WatchlistProvider = ({ children }: { children: ReactNode }) => {
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
 
   useEffect(() => {
     loadWatchlist();
+    // Reload when the active user changes (login / logout / delete account)
+    const listener = DeviceEventEmitter.addListener('userChanged', () => {
+      loadWatchlist();
+    });
+
+    return () => {
+      listener.remove();
+    };
   }, []);
 
   const loadWatchlist = async () => {
     try {
-      const stored = await AsyncStorage.getItem(WATCHLIST_KEY);
+      const currentUser = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
+      const key = currentUser ? `${WATCHLIST_KEY_BASE}_${currentUser}` : `${WATCHLIST_KEY_BASE}_global`;
+
+      // If no per-user key but a legacy global key exists, migrate it for the current user
+      if (currentUser) {
+        const legacy = await AsyncStorage.getItem(WATCHLIST_KEY_BASE);
+        const hasUserKey = await AsyncStorage.getItem(key);
+        if (!hasUserKey && legacy) {
+          await AsyncStorage.setItem(key, legacy);
+          await AsyncStorage.removeItem(WATCHLIST_KEY_BASE);
+        }
+      }
+
+      const stored = await AsyncStorage.getItem(key);
       if (stored) {
         setWatchlist(JSON.parse(stored));
+      } else {
+        setWatchlist([]);
       }
     } catch (error) {
       console.error('Error loading watchlist:', error);
@@ -33,7 +58,9 @@ export const WatchlistProvider = ({ children }: { children: ReactNode }) => {
 
   const saveWatchlist = async (items: WatchlistItem[]) => {
     try {
-      await AsyncStorage.setItem(WATCHLIST_KEY, JSON.stringify(items));
+      const currentUser = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
+      const key = currentUser ? `${WATCHLIST_KEY_BASE}_${currentUser}` : `${WATCHLIST_KEY_BASE}_global`;
+      await AsyncStorage.setItem(key, JSON.stringify(items));
       setWatchlist(items);
     } catch (error) {
       console.error('Error saving watchlist:', error);

@@ -7,6 +7,7 @@ import { palette, spacing } from '@/theme';
 import { useAuth } from '../../App';
 import * as Keychain from 'react-native-keychain';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { DeviceEventEmitter } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '@/navigation/types';
@@ -21,6 +22,28 @@ const KEYCHAIN_SERVICE = 'FinanceAI_PIN';
 export const SettingsScreen = () => {
   const { logout } = useAuth();
   const navigation = useNavigation<NavigationProp>();
+  const [activeUser, setActiveUser] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let mounted = true;
+
+    const load = async () => {
+      try {
+        const name = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
+        if (mounted) setActiveUser(name);
+      } catch (err) {
+        console.warn('Failed loading active username in Settings', err);
+      }
+    };
+
+    load();
+
+    const sub = DeviceEventEmitter.addListener('userChanged', load);
+    return () => {
+      mounted = false;
+      sub.remove();
+    };
+  }, []);
 
   const handleLogout = () => {
     Alert.alert(
@@ -57,9 +80,24 @@ export const SettingsScreen = () => {
                 }
               }
 
-              // 3. Clear Login Credentials
-              await Keychain.resetGenericPassword({ service: KEYCHAIN_SERVICE });
+              // 3. Clear Login Credentials (per-user keychain)
+              if (currentUsername) {
+                const serviceName = `${KEYCHAIN_SERVICE}_${currentUsername}`;
+                await Keychain.resetGenericPassword({ service: serviceName });
+              } else {
+                // Fallback: try global keychain reset
+                await Keychain.resetGenericPassword({ service: KEYCHAIN_SERVICE });
+              }
+              // Remove per-user watchlist and username
+              try {
+                const watchlistKey = `@finai_watchlist_${currentUsername}`;
+                await AsyncStorage.removeItem(watchlistKey);
+              } catch (err) {
+                console.warn('Failed removing per-user watchlist during account deletion', err);
+              }
               await AsyncStorage.removeItem(STORAGE_KEY_USERNAME);
+              // Notify contexts that user changed
+              DeviceEventEmitter.emit('userChanged');
               
               logout();
             } catch (error) {
@@ -75,25 +113,38 @@ export const SettingsScreen = () => {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <SurfaceCard style={styles.profileCard}>
+        <View style={styles.profileInner}>
+          <View style={styles.avatar}>
+            <Icon name="person" size={36} color="#ffffff" />
+          </View>
+          <Text style={styles.loggedText}>Logged in as</Text>
+          <Text style={styles.username}>{activeUser || '—'}</Text>
+        </View>
+      </SurfaceCard>
+
+      <Text style={styles.actionsHeader}>Account Actions</Text>
+
       <TouchableOpacity onPress={handleLogout}>
-        <SurfaceCard style={styles.settingCard}>
+        <SurfaceCard style={styles.logoutCard}>
           <View style={styles.settingRow}>
-            <Icon name="log-out-outline" size={24} color={palette.text} />
+            <Icon name="log-out-outline" size={20} color={palette.text} />
             <View style={styles.settingText}>
               <Text style={styles.settingTitle}>Log Out</Text>
               <Text style={styles.settingDesc}>Sign out of your account</Text>
             </View>
+            <Icon name="chevron-forward" size={20} color={palette.mutedText} />
           </View>
         </SurfaceCard>
       </TouchableOpacity>
 
       <TouchableOpacity onPress={handleDeleteAccount}>
-        <SurfaceCard style={styles.settingCard}>
+        <SurfaceCard style={styles.deleteCard}>
           <View style={styles.settingRow}>
-            <Icon name="trash-outline" size={24} color={palette.danger} />
+            <Icon name="trash-outline" size={20} color={palette.background} />
             <View style={styles.settingText}>
-              <Text style={[styles.settingTitle, { color: palette.danger }]}>Delete Account</Text>
-              <Text style={styles.settingDesc}>Permanently remove your account</Text>
+              <Text style={styles.deleteTitle}>Delete Account</Text>
+              <Text style={[styles.settingDesc, { color: palette.background }]}>Permanently remove your account</Text>
             </View>
           </View>
         </SurfaceCard>
@@ -131,5 +182,55 @@ const styles = StyleSheet.create({
     color: palette.mutedText,
     fontSize: 13,
     lineHeight: 18,
+  },
+  profileCard: {
+    paddingVertical: spacing.lg,
+    marginBottom: spacing.md,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: palette.card,
+  },
+  profileInner: {
+    alignItems: 'center',
+  },
+  avatar: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: palette.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.sm,
+  },
+  loggedText: {
+    color: palette.mutedText,
+    fontSize: 13,
+    marginBottom: 6,
+  },
+  username: {
+    color: palette.text,
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  actionsHeader: {
+    color: palette.primary,
+    fontSize: 13,
+    marginVertical: spacing.md,
+    fontWeight: '700',
+  },
+  logoutCard: {
+    marginBottom: spacing.sm,
+    paddingVertical: spacing.md,
+  },
+  deleteCard: {
+    marginTop: spacing.sm,
+    paddingVertical: spacing.md,
+    backgroundColor: palette.danger,
+  },
+  deleteTitle: {
+    color: palette.background,
+    fontSize: 16,
+    fontWeight: '700',
   },
 });

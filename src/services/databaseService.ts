@@ -35,7 +35,7 @@ class DatabaseService {
     if (!this.db) throw new Error('Database not initialized');
 
     // Companies table
-    this.db.execute(`
+    await this.db.execute(`
       CREATE TABLE IF NOT EXISTS companies (
         symbol TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -47,7 +47,7 @@ class DatabaseService {
     `);
 
     // Stock quotes table
-    this.db.execute(`
+    await this.db.execute(`
       CREATE TABLE IF NOT EXISTS stock_quotes (
         symbol TEXT PRIMARY KEY,
         price REAL NOT NULL,
@@ -65,7 +65,7 @@ class DatabaseService {
     `);
 
     // Historical data table
-    this.db.execute(`
+    await this.db.execute(`
       CREATE TABLE IF NOT EXISTS historical_data (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         symbol TEXT NOT NULL,
@@ -80,7 +80,7 @@ class DatabaseService {
     `);
 
     // Company overview table
-    this.db.execute(`
+    await this.db.execute(`
       CREATE TABLE IF NOT EXISTS company_overview (
         symbol TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -98,7 +98,7 @@ class DatabaseService {
     `);
 
     // Financial metrics table
-    this.db.execute(`
+    await this.db.execute(`
       CREATE TABLE IF NOT EXISTS financial_metrics (
         symbol TEXT PRIMARY KEY,
         pe_ratio REAL,
@@ -115,7 +115,7 @@ class DatabaseService {
     `);
 
     // Search cache table
-    this.db.execute(`
+    await this.db.execute(`
       CREATE TABLE IF NOT EXISTS search_cache (
         query TEXT PRIMARY KEY,
         results TEXT NOT NULL,
@@ -124,8 +124,8 @@ class DatabaseService {
     `);
 
     // Create indexes
-    this.db.execute(`CREATE INDEX IF NOT EXISTS idx_historical_symbol ON historical_data(symbol);`);
-    this.db.execute(`CREATE INDEX IF NOT EXISTS idx_historical_date ON historical_data(date);`);
+    await this.db.execute(`CREATE INDEX IF NOT EXISTS idx_historical_symbol ON historical_data(symbol);`);
+    await this.db.execute(`CREATE INDEX IF NOT EXISTS idx_historical_date ON historical_data(date);`);
 
     console.log('✅ Database tables created');
   }
@@ -136,7 +136,7 @@ class DatabaseService {
   async saveCompany(company: Company): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
 
-    this.db.execute(
+    await this.db.execute(
       `INSERT OR REPLACE INTO companies (symbol, name, exchange, currency, country, cached_at) VALUES (?, ?, ?, ?, ?, ?)`,
       [company.symbol, company.name, company.exchange, company.currency, company.country, Date.now()]
     );
@@ -148,7 +148,7 @@ class DatabaseService {
   async saveStockQuote(quote: StockQuote): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
 
-    this.db.execute(
+    await this.db.execute(
       `INSERT OR REPLACE INTO stock_quotes (symbol, price, change_value, change_percent, volume, high, low, open, previous_close, timestamp, cached_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [quote.symbol, quote.price, quote.change, quote.changePercent, quote.volume, quote.high, quote.low, quote.open, quote.previousClose, quote.timestamp, Date.now()]
     );
@@ -160,12 +160,12 @@ class DatabaseService {
   async getStockQuote(symbol: string, maxAge: number = 24 * 60 * 60 * 1000): Promise<StockQuote | null> {
     if (!this.db) throw new Error('Database not initialized');
 
-    const result = this.db.execute(
+    const result = await this.db.execute(
       `SELECT * FROM stock_quotes WHERE symbol = ? AND cached_at > ?`,
       [symbol, Date.now() - maxAge]
     );
 
-    if (!result.rows || result.rows.length === 0) return null;
+    if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
 
     const row = result.rows._array[0];
     return {
@@ -189,14 +189,26 @@ class DatabaseService {
     if (!this.db) throw new Error('Database not initialized');
 
     const now = Date.now();
-    
-    this.db.execute(`DELETE FROM historical_data WHERE symbol = ? AND range = ?`, [symbol, range]);
+    // Use a transaction for bulk delete+inserts for safety and performance
+    try {
+      await this.db.execute('BEGIN');
+      await this.db.execute(`DELETE FROM historical_data WHERE symbol = ? AND range = ?`, [symbol, range]);
 
-    for (const point of data) {
-      this.db.execute(
-        `INSERT INTO historical_data (symbol, date, price, timestamp, range, cached_at) VALUES (?, ?, ?, ?, ?, ?)`,
-        [symbol, point.date, point.price, point.timestamp, range, now]
-      );
+      for (const point of data) {
+        await this.db.execute(
+          `INSERT INTO historical_data (symbol, date, price, timestamp, range, cached_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          [symbol, point.date, point.price, point.timestamp, range, now]
+        );
+      }
+
+      await this.db.execute('COMMIT');
+    } catch (err) {
+      try {
+        await this.db.execute('ROLLBACK');
+      } catch (rbErr) {
+        console.warn('Rollback failed', rbErr);
+      }
+      throw err;
     }
   }
 
@@ -206,12 +218,12 @@ class DatabaseService {
   async getHistoricalData(symbol: string, range: string, maxAge: number = 24 * 60 * 60 * 1000): Promise<ChartDataPoint[] | null> {
     if (!this.db) throw new Error('Database not initialized');
 
-    const result = this.db.execute(
+    const result = await this.db.execute(
       `SELECT * FROM historical_data WHERE symbol = ? AND range = ? AND cached_at > ? ORDER BY timestamp ASC`,
       [symbol, range, Date.now() - maxAge]
     );
 
-    if (!result.rows || result.rows.length === 0) return null;
+    if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
 
     return result.rows._array.map((row: any) => ({
       date: row.date,
@@ -226,7 +238,7 @@ class DatabaseService {
   async saveCompanyOverview(overview: CompanyOverview): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
 
-    this.db.execute(
+    await this.db.execute(
       `INSERT OR REPLACE INTO company_overview (symbol, name, exchange, currency, country, description, sector, industry, employees, website, cached_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [overview.symbol, overview.name, overview.exchange, overview.currency, overview.country, overview.description || null, overview.sector, overview.industry, overview.employees || null, overview.website || null, Date.now()]
     );
@@ -238,12 +250,12 @@ class DatabaseService {
   async getCompanyOverview(symbol: string, maxAge: number = 7 * 24 * 60 * 60 * 1000): Promise<CompanyOverview | null> {
     if (!this.db) throw new Error('Database not initialized');
 
-    const result = this.db.execute(
+    const result = await this.db.execute(
       `SELECT * FROM company_overview WHERE symbol = ? AND cached_at > ?`,
       [symbol, Date.now() - maxAge]
     );
 
-    if (!result.rows || result.rows.length === 0) return null;
+    if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
 
     const row = result.rows._array[0];
     return {
@@ -266,7 +278,7 @@ class DatabaseService {
   async saveFinancialMetrics(metrics: FinancialMetrics): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
 
-    this.db.execute(
+    await this.db.execute(
       `INSERT OR REPLACE INTO financial_metrics (symbol, pe_ratio, eps, market_cap, dividend_yield, week_high_52, week_low_52, beta, average_volume, cached_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [metrics.symbol, metrics.peRatio || null, metrics.eps || null, metrics.marketCap || null, metrics.dividendYield || null, metrics.weekHigh52 || null, metrics.weekLow52 || null, metrics.beta || null, metrics.averageVolume || null, Date.now()]
     );
@@ -278,12 +290,12 @@ class DatabaseService {
   async getFinancialMetrics(symbol: string, maxAge: number = 7 * 24 * 60 * 60 * 1000): Promise<FinancialMetrics | null> {
     if (!this.db) throw new Error('Database not initialized');
 
-    const result = this.db.execute(
+    const result = await this.db.execute(
       `SELECT * FROM financial_metrics WHERE symbol = ? AND cached_at > ?`,
       [symbol, Date.now() - maxAge]
     );
 
-    if (!result.rows || result.rows.length === 0) return null;
+    if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
 
     const row = result.rows._array[0];
     return {
@@ -309,7 +321,7 @@ class DatabaseService {
       await this.saveCompany(company);
     }
 
-    this.db.execute(
+    await this.db.execute(
       `INSERT OR REPLACE INTO search_cache (query, results, cached_at) VALUES (?, ?, ?)`,
       [query.toLowerCase(), JSON.stringify(companies.map(c => c.symbol)), Date.now()]
     );
@@ -321,21 +333,21 @@ class DatabaseService {
   async getSearchCache(query: string, maxAge: number = 7 * 24 * 60 * 60 * 1000): Promise<Company[] | null> {
     if (!this.db) throw new Error('Database not initialized');
 
-    const result = this.db.execute(
+    const result = await this.db.execute(
       `SELECT * FROM search_cache WHERE query = ? AND cached_at > ?`,
       [query.toLowerCase(), Date.now() - maxAge]
     );
 
-    if (!result.rows || result.rows.length === 0) return null;
+    if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
 
     const row = result.rows._array[0];
     const symbols: string[] = JSON.parse(row.results);
 
     const companies: Company[] = [];
     for (const symbol of symbols) {
-      const companyResult = this.db.execute(`SELECT * FROM companies WHERE symbol = ?`, [symbol]);
+      const companyResult = await this.db.execute(`SELECT * FROM companies WHERE symbol = ?`, [symbol]);
       
-      if (companyResult.rows && companyResult.rows.length > 0) {
+      if (companyResult && companyResult.rows && companyResult.rows._array && companyResult.rows._array.length > 0) {
         const company = companyResult.rows._array[0];
         companies.push({
           symbol: company.symbol,
@@ -378,9 +390,9 @@ class DatabaseService {
   async getAllCachedSymbols(): Promise<string[]> {
     if (!this.db) throw new Error('Database not initialized');
 
-    const result = this.db.execute(`SELECT DISTINCT symbol FROM companies ORDER BY symbol`);
+    const result = await this.db.execute(`SELECT DISTINCT symbol FROM companies ORDER BY symbol`);
 
-    if (!result.rows || result.rows.length === 0) return [];
+    if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return [];
 
     return result.rows._array.map((row: any) => row.symbol);
   }
@@ -393,9 +405,9 @@ class DatabaseService {
 
     const cutoff = Date.now() - maxAge;
 
-    this.db.execute(`DELETE FROM stock_quotes WHERE cached_at < ?`, [cutoff]);
-    this.db.execute(`DELETE FROM historical_data WHERE cached_at < ?`, [cutoff]);
-    this.db.execute(`DELETE FROM search_cache WHERE cached_at < ?`, [cutoff]);
+    await this.db.execute(`DELETE FROM stock_quotes WHERE cached_at < ?`, [cutoff]);
+    await this.db.execute(`DELETE FROM historical_data WHERE cached_at < ?`, [cutoff]);
+    await this.db.execute(`DELETE FROM search_cache WHERE cached_at < ?`, [cutoff]);
 
     console.log('✅ Old cache data cleared');
   }

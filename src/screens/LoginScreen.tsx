@@ -11,6 +11,7 @@ import {
 import { Text, TextInput, Button } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/Ionicons';
 import * as Keychain from 'react-native-keychain';
+import { DeviceEventEmitter } from 'react-native';
 import ReactNativeBiometrics from 'react-native-biometrics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { palette } from '@/theme';
@@ -45,18 +46,32 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
   // ... (keep checkExistingUser, checkBiometrics, and handleBiometricLogin the same) ...
   const checkExistingUser = async () => {
     try {
-      const credentials = await Keychain.getGenericPassword({ service: KEYCHAIN_SERVICE });
-      if (credentials) {
-        const name = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
-        setStoredUsername(name || 'User');
-        setHasAccount(true);
-        if (isExplicitLogout) {
-          setShowQuickLogin(false);
-          setIsSignUpMode(false);
-        } else {
-          setShowQuickLogin(true);
-          setIsSignUpMode(false);
+      const storedName = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
+      const existingUsersJson = await AsyncStorage.getItem(STORAGE_KEY_ALL_USERS);
+      const existingUsers: string[] = existingUsersJson ? JSON.parse(existingUsersJson) : [];
+
+      if (storedName) {
+        const serviceName = `${KEYCHAIN_SERVICE}_${storedName}`;
+        const credentials = await Keychain.getGenericPassword({ service: serviceName });
+        if (credentials) {
+          setStoredUsername(storedName || 'User');
+          setHasAccount(true);
+          if (isExplicitLogout) {
+            setShowQuickLogin(false);
+            setIsSignUpMode(false);
+          } else {
+            setShowQuickLogin(true);
+            setIsSignUpMode(false);
+          }
+          setIsLoading(false);
+          return;
         }
+      }
+
+      if (existingUsers.length > 0) {
+        setHasAccount(true);
+        setIsSignUpMode(false);
+        setShowQuickLogin(false);
       } else {
         setHasAccount(false);
         setIsSignUpMode(true);
@@ -141,9 +156,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
 
       // D. Proceed with standard login (save current active user)
       await AsyncStorage.setItem(STORAGE_KEY_USERNAME, newUsername);
-      
-      // Save PIN to Keychain
-      await Keychain.setGenericPassword('user', pin, { service: KEYCHAIN_SERVICE });
+
+      // Save PIN to Keychain under a per-user service
+      const serviceName = `${KEYCHAIN_SERVICE}_${newUsername}`;
+      await Keychain.setGenericPassword(newUsername, pin, { service: serviceName });
       
       // Clear form
       setUsername('');
@@ -151,6 +167,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
       setError('');
       
       // Call success callback
+      // Notify contexts that the active user changed
+      DeviceEventEmitter.emit('userChanged');
       onLoginSuccess();
     } catch (error) {
       console.error('Error during sign up:', error);
@@ -166,29 +184,39 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
     }
 
     try {
-      const storedUser = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
-      const credentials = await Keychain.getGenericPassword({ service: KEYCHAIN_SERVICE });
-      
       if (showQuickLogin) {
-        if (credentials && credentials.password === pin) {
-          setPin('');
-          setUsername('');
-          setError('');
-          onLoginSuccess();
-        } else {
-          setError('Incorrect PIN');
-          setPin('');
+        const currentStored = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
+        if (currentStored) {
+          const serviceName = `${KEYCHAIN_SERVICE}_${currentStored}`;
+          const storedCreds = await Keychain.getGenericPassword({ service: serviceName });
+          if (storedCreds && storedCreds.password === pin) {
+            setPin('');
+            setUsername('');
+            setError('');
+            DeviceEventEmitter.emit('userChanged');
+            onLoginSuccess();
+            return;
+          }
         }
+
+        setError('Incorrect PIN');
+        setPin('');
+        return;
       } else {
         if (!username.trim()) {
           setError('Please enter your username');
           return;
         }
-        
-        if (credentials && credentials.password === pin && storedUser === username.trim()) {
+
+        const serviceName = `${KEYCHAIN_SERVICE}_${username.trim()}`;
+        const storedCreds = await Keychain.getGenericPassword({ service: serviceName });
+
+        if (storedCreds && storedCreds.password === pin) {
+          await AsyncStorage.setItem(STORAGE_KEY_USERNAME, username.trim());
           setPin('');
           setUsername('');
           setError('');
+          DeviceEventEmitter.emit('userChanged');
           onLoginSuccess();
         } else {
           setError('Incorrect username or PIN');
@@ -203,8 +231,23 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
 
   const handleDeleteAccount = async () => {
     try {
-      await Keychain.resetGenericPassword({ service: KEYCHAIN_SERVICE });
+      // Remove keychain entry for current user
+      const currentUsername = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
+      if (currentUsername) {
+        const serviceName = `${KEYCHAIN_SERVICE}_${currentUsername}`;
+        await Keychain.resetGenericPassword({ service: serviceName });
+      }
+      // Remove per-user watchlist and username
+      try {
+        if (currentUsername) {
+          const watchlistKey = `@finai_watchlist_${currentUsername}`;
+          await AsyncStorage.removeItem(watchlistKey);
+        }
+      } catch (err) {
+        console.warn('Failed removing per-user watchlist during account deletion', err);
+      }
       await AsyncStorage.removeItem(STORAGE_KEY_USERNAME);
+      DeviceEventEmitter.emit('userChanged');
       setHasAccount(false);
       setIsSignUpMode(true);
       setStoredUsername('');
