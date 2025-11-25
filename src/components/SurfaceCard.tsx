@@ -1,6 +1,6 @@
 import React, { PropsWithChildren } from 'react';
 import { StyleSheet, View, ViewProps } from 'react-native';
-import { palette, radius } from '@/theme';
+import { palette, layout, spacing } from '@/theme';
 
 export const SurfaceCard = ({
   children,
@@ -14,10 +14,10 @@ export const SurfaceCard = ({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: palette.card,
-    borderRadius: radius.md,
-    padding: 16,
-    borderWidth: StyleSheet.hairlineWidth,
+    backgroundColor: palette.surface,
+    borderRadius: layout.borderRadius,
+    padding: spacing.md,
+    borderWidth: 1, 
     borderColor: palette.border,
   },
 });

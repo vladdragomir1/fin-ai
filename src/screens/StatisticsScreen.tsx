@@ -1,97 +1,234 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import Icon from 'react-native-vector-icons/Ionicons';
-import { ScreenShell, SurfaceCard } from '@/components';
-import { palette, spacing } from '@/theme';
+import { StyleSheet, Text, View, ScrollView } from 'react-native';
+import { 
+  BarChart4, 
+  TrendingUp, 
+  PieChart, 
+  Construction, 
+  Lock, 
+  ArrowRight 
+} from 'lucide-react-native';
+import { ScreenShell } from '@/components';
+import { palette, spacing, layout } from '@/theme';
 
 export const StatisticsScreen = () => {
+  
+  const FeatureItem = ({ label, icon: Icon, color }: { label: string, icon: any, color: string }) => (
+    <View style={styles.featureRow}>
+      <View style={[styles.iconBox, { backgroundColor: `${color}15` }]}>
+        <Icon size={18} color={color} strokeWidth={1.5} />
+      </View>
+      <Text style={styles.featureText}>{label}</Text>
+    </View>
+  );
+
   return (
     <ScreenShell>
-      <View style={styles.header}>
-        <Text style={styles.title}>Market Statistics</Text>
-        <Text style={styles.subtitle}>Coming Soon</Text>
-      </View>
+      <ScrollView contentContainerStyle={styles.content}>
+        
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.title}>Market Analytics</Text>
+          <View style={styles.badge}>
+            <Construction size={12} color={palette.warning} />
+            <Text style={styles.badgeText}>IN DEVELOPMENT</Text>
+          </View>
+        </View>
 
-      <SurfaceCard>
-        <View style={styles.emptyContainer}>
-          <Icon name="bar-chart" size={64} color={palette.mutedText} />
-          <Text style={styles.emptyTitle}>Market Analytics</Text>
-          <Text style={styles.emptyText}>
-            Advanced market statistics and analytics will be available here soon.
+        {/* Main Placeholder Card */}
+        <View style={styles.mainCard}>
+          <View style={styles.illustrationContainer}>
+            <View style={styles.circleOuter}>
+              <View style={styles.circleInner}>
+                <BarChart4 size={48} color={palette.accent} strokeWidth={1} />
+              </View>
+            </View>
+          </View>
+          
+          <Text style={styles.cardTitle}>Advanced Terminal Offline</Text>
+          <Text style={styles.cardDesc}>
+            We are currently compiling high-frequency trading algorithms and global market indices for this module.
           </Text>
-        </View>
-      </SurfaceCard>
 
-      <SurfaceCard style={styles.infoCard}>
-        <Text style={styles.infoTitle}>Upcoming Features:</Text>
-        <View style={styles.featureItem}>
-          <Icon name="trending-up" size={20} color={palette.primary} />
-          <Text style={styles.featureText}>Market trends and indices</Text>
+          <View style={styles.lockedContainer}>
+            <Lock size={14} color={palette.mutedText} />
+            <Text style={styles.lockedText}>Module Locked • v2.0 Update</Text>
+          </View>
         </View>
-        <View style={styles.featureItem}>
-          <Icon name="analytics" size={20} color={palette.secondary} />
-          <Text style={styles.featureText}>Portfolio performance tracking</Text>
+
+        {/* Roadmap Section */}
+        <View style={styles.roadmapContainer}>
+          <Text style={styles.sectionHeader}>UPCOMING CAPABILITIES</Text>
+          
+          <View style={styles.roadmapCard}>
+            <FeatureItem 
+              label="Real-time Sector Heatmaps" 
+              icon={PieChart} 
+              color={palette.primary} 
+            />
+            <View style={styles.divider} />
+            <FeatureItem 
+              label="Portfolio Performance Attribution" 
+              icon={TrendingUp} 
+              color={palette.success} 
+            />
+            <View style={styles.divider} />
+            <FeatureItem 
+              label="Global Indices & Macro Trends" 
+              icon={BarChart4} 
+              color={palette.accent} 
+            />
+          </View>
         </View>
-        <View style={styles.featureItem}>
-          <Icon name="stats-chart" size={20} color={palette.accent} />
-          <Text style={styles.featureText}>Sector analysis and comparisons</Text>
-        </View>
-      </SurfaceCard>
+
+      </ScrollView>
     </ScreenShell>
   );
 };
 
 const styles = StyleSheet.create({
+  content: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xl,
+    paddingBottom: spacing.xxl,
+  },
+
+  // Header
   header: {
-    marginBottom: spacing.lg,
+    marginBottom: spacing.xl,
   },
   title: {
     color: palette.text,
     fontSize: 28,
     fontWeight: '700',
-    marginBottom: spacing.xs,
+    letterSpacing: -0.5,
+    marginBottom: spacing.sm,
   },
-  subtitle: {
-    color: palette.accent,
-    fontSize: 14,
-    fontWeight: '600',
-    textTransform: 'uppercase',
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+  },
+  badgeText: {
+    color: palette.warning,
+    fontSize: 10,
+    fontWeight: '700',
     letterSpacing: 1,
   },
-  emptyContainer: {
+
+  mainCard: {
+    backgroundColor: palette.surface,
+    borderRadius: layout.borderRadius,
+    padding: spacing.xl,
     alignItems: 'center',
-    paddingVertical: spacing.xl,
+    borderWidth: 1,
+    borderColor: palette.border,
+    marginBottom: spacing.xl,
   },
-  emptyTitle: {
+  illustrationContainer: {
+    marginBottom: spacing.lg,
+  },
+  circleOuter: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: palette.surfaceHighlight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  circleInner: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: palette.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: palette.surfaceHighlight,
+    shadowColor: palette.accent,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+  },
+  cardTitle: {
     color: palette.text,
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '600',
-    marginTop: spacing.md,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.sm,
+    textAlign: 'center',
   },
-  emptyText: {
+  cardDesc: {
     color: palette.mutedText,
     fontSize: 14,
     textAlign: 'center',
-    lineHeight: 20,
+    lineHeight: 22,
+    marginBottom: spacing.lg,
   },
-  infoCard: {
-    marginTop: spacing.md,
-  },
-  infoTitle: {
-    color: palette.text,
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: spacing.md,
-  },
-  featureItem: {
+  lockedContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
-    marginBottom: spacing.sm,
+    gap: 6,
+    backgroundColor: palette.surfaceHighlight,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 100,
+  },
+  lockedText: {
+    color: palette.mutedText,
+    fontSize: 11,
+    fontWeight: '500',
+  },
+
+  // Roadmap
+  roadmapContainer: {
+    marginTop: spacing.sm,
+  },
+  sectionHeader: {
+    color: palette.mutedText,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    marginBottom: spacing.md,
+    marginLeft: 4,
+  },
+  roadmapCard: {
+    backgroundColor: palette.surface,
+    borderRadius: layout.borderRadius,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: spacing.md,
+  },
+  featureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  iconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: spacing.md,
   },
   featureText: {
     color: palette.text,
     fontSize: 14,
+    fontWeight: '500',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: palette.surfaceHighlight,
+    marginVertical: spacing.sm,
+    marginLeft: 48, 
   },
 });

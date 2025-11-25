@@ -7,18 +7,28 @@ import {
   Platform,
   ScrollView,
   TouchableOpacity,
+  TextInput,
+  Text,
+  ActivityIndicator,
+  DeviceEventEmitter,
+  Dimensions,
 } from 'react-native';
-import { Text, TextInput, Button } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/Ionicons';
+import { 
+  User, 
+  Lock, 
+  Fingerprint, 
+  ArrowRight, 
+  AlertCircle,
+  ShieldCheck 
+} from 'lucide-react-native';
 import * as Keychain from 'react-native-keychain';
-import { DeviceEventEmitter } from 'react-native';
 import ReactNativeBiometrics from 'react-native-biometrics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { palette } from '@/theme';
+import { palette, spacing, layout } from '@/theme';
 
-// 1. Add a new key to track ALL users
+// --- LOGIC CONSTANTS ---
 const STORAGE_KEY_USERNAME = 'username';
-const STORAGE_KEY_ALL_USERS = 'registered_users'; 
+const STORAGE_KEY_ALL_USERS = 'registered_users';
 const KEYCHAIN_SERVICE = 'FinanceAI_PIN';
 
 interface LoginScreenProps {
@@ -27,7 +37,7 @@ interface LoginScreenProps {
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExplicitLogout = false }) => {
-  // ... (keep all your existing state variables exactly the same) ...
+  // --- STATE MANAGEMENT (Preserved) ---
   const [hasAccount, setHasAccount] = useState<boolean | null>(null);
   const [isSignUpMode, setIsSignUpMode] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -38,12 +48,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
   const [showQuickLogin, setShowQuickLogin] = useState<boolean>(false);
   const [biometricsAvailable, setBiometricsAvailable] = useState<boolean>(false);
 
+  // --- EFFECTS (Preserved) ---
   useEffect(() => {
     checkExistingUser();
     checkBiometrics();
   }, []);
 
-  // ... (keep checkExistingUser, checkBiometrics, and handleBiometricLogin the same) ...
+  // --- LOGIC FUNCTIONS (Preserved) ---
   const checkExistingUser = async () => {
     try {
       const storedName = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
@@ -121,7 +132,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
     }
   };
 
-  // 2. UPDATED: Handle Sign Up with Check
   const handleSignUp = async () => {
     if (!username.trim()) {
       setError('Please enter your name');
@@ -138,36 +148,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
 
     try {
       const newUsername = username.trim();
-
-      // A. Get the list of all existing users
       const existingUsersJson = await AsyncStorage.getItem(STORAGE_KEY_ALL_USERS);
       let existingUsers: string[] = existingUsersJson ? JSON.parse(existingUsersJson) : [];
 
-      // B. Check if username exists
       if (existingUsers.includes(newUsername)) {
-        // This sets the error message which is styled in RED in your return JSX
         setError('Username already exists'); 
         return;
       }
 
-      // C. If not exists, add to the list and save back
       existingUsers.push(newUsername);
       await AsyncStorage.setItem(STORAGE_KEY_ALL_USERS, JSON.stringify(existingUsers));
-
-      // D. Proceed with standard login (save current active user)
       await AsyncStorage.setItem(STORAGE_KEY_USERNAME, newUsername);
 
-      // Save PIN to Keychain under a per-user service
       const serviceName = `${KEYCHAIN_SERVICE}_${newUsername}`;
       await Keychain.setGenericPassword(newUsername, pin, { service: serviceName });
       
-      // Clear form
       setUsername('');
       setPin('');
       setError('');
       
-      // Call success callback
-      // Notify contexts that the active user changed
       DeviceEventEmitter.emit('userChanged');
       onLoginSuccess();
     } catch (error) {
@@ -176,7 +175,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
     }
   };
 
-  // ... (keep handleSignIn, handleDeleteAccount, toggleMode, and the return/styles exactly the same) ...
   const handleSignIn = async () => {
     if (!pin.trim()) {
       setError('Please enter your PIN');
@@ -198,7 +196,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
             return;
           }
         }
-
         setError('Incorrect PIN');
         setPin('');
         return;
@@ -230,21 +227,20 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
   };
 
   const handleDeleteAccount = async () => {
+    // Preserved specifically requested functionality, though not used in UI yet
     try {
-      // Remove keychain entry for current user
       const currentUsername = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
       if (currentUsername) {
         const serviceName = `${KEYCHAIN_SERVICE}_${currentUsername}`;
         await Keychain.resetGenericPassword({ service: serviceName });
       }
-      // Remove per-user watchlist and username
       try {
         if (currentUsername) {
           const watchlistKey = `@finai_watchlist_${currentUsername}`;
           await AsyncStorage.removeItem(watchlistKey);
         }
       } catch (err) {
-        console.warn('Failed removing per-user watchlist during account deletion', err);
+        console.warn('Failed removing per-user watchlist', err);
       }
       await AsyncStorage.removeItem(STORAGE_KEY_USERNAME);
       DeviceEventEmitter.emit('userChanged');
@@ -256,7 +252,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
       setError('');
     } catch (error) {
       console.error('Error deleting account:', error);
-      setError('Failed to delete account. Please try again.');
+      setError('Failed to delete account.');
     }
   };
 
@@ -267,13 +263,28 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
     setError('');
   };
 
+  // --- RENDER HELPERS ---
+
   if (isLoading) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading...</Text>
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={palette.primary} />
+        <Text style={styles.loadingText}>Securing connection...</Text>
       </View>
     );
   }
+
+  // --- NEW UI IMPLEMENTATION ---
+  
+  const headerTitle = isSignUpMode 
+    ? 'Create Account' 
+    : showQuickLogin 
+      ? `Welcome back, ${storedUsername}` 
+      : 'Access Terminal';
+      
+  const headerSubtitle = isSignUpMode
+    ? 'Initialize your secure financial profile.'
+    : 'Enter credentials to continue.';
 
   return (
     <KeyboardAvoidingView
@@ -281,228 +292,314 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled">
-        <View style={styles.content}>
-          <Image
-            source={require('../assets/FINAI.png')}
-            style={styles.logo}
-            resizeMode="contain"
-          />
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}>
+        
+        {/* Brand Header */}
+        <View style={styles.headerSection}>
+          <View style={styles.logoContainer}>
+             {/* Note: Ensure the image path is correct, kept from your code */}
+            <Image
+              source={require('../assets/FINAI.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+          </View>
+          <Text style={styles.appTitle}>FINAI</Text>
+          <Text style={styles.appSubtitle}>INTELLIGENCE ASSET</Text>
+        </View>
 
-          <Text style={styles.title}>
-            {isSignUpMode ? 'Welcome to FinanceAI' : showQuickLogin ? `Welcome back, ${storedUsername}` : 'Log In to FinanceAI'}
-          </Text>
+        {/* Form Container */}
+        <View style={styles.formContainer}>
+          <View style={styles.textGroup}>
+            <Text style={styles.heading}>{headerTitle}</Text>
+            <Text style={styles.subHeading}>{headerSubtitle}</Text>
+          </View>
 
-          {isSignUpMode && (
-            <>
+          {/* Username Input (Hidden during Quick Login) */}
+          {(isSignUpMode || (!isSignUpMode && !showQuickLogin)) && (
+            <View style={styles.inputWrapper}>
+              <View style={styles.inputIcon}>
+                <User size={20} color={palette.mutedText} />
+              </View>
               <TextInput
-                label="Create Your Username"
+                placeholder="Username"
+                placeholderTextColor={palette.mutedText}
                 value={username}
                 onChangeText={(text) => {
                   setUsername(text);
                   setError('');
                 }}
-                mode="outlined"
                 style={styles.input}
-                outlineColor={palette.border}
-                activeOutlineColor={palette.primary}
-                textColor={palette.text}
-                theme={{
-                  colors: {
-                    onSurfaceVariant: palette.mutedText,
-                    background: palette.surface,
-                  },
-                }}
+                autoCapitalize="none"
               />
-              <TextInput
-                label="Create PIN"
-                value={pin}
-                onChangeText={(text) => {
-                  setPin(text);
-                  setError('');
-                }}
-                mode="outlined"
-                secureTextEntry
-                keyboardType="numeric"
-                maxLength={6}
-                style={styles.input}
-                outlineColor={palette.border}
-                activeOutlineColor={palette.primary}
-                textColor={palette.text}
-                theme={{
-                  colors: {
-                    onSurfaceVariant: palette.mutedText,
-                    background: palette.surface,
-                  },
-                }}
-              />
-            </>
+            </View>
           )}
 
-          {!isSignUpMode && (
-            <>
-              {!showQuickLogin && (
-                <TextInput
-                  label="Enter Your Username"
-                  value={username}
-                  onChangeText={(text) => {
-                    setUsername(text);
-                    setError('');
-                  }}
-                  mode="outlined"
-                  style={styles.input}
-                  outlineColor={palette.border}
-                  activeOutlineColor={palette.primary}
-                  textColor={palette.text}
-                  theme={{
-                    colors: {
-                      onSurfaceVariant: palette.mutedText,
-                      background: palette.surface,
-                    },
-                  }}
-                />
-              )}
-              <TextInput
-                label="Enter Your PIN"
-                value={pin}
-                onChangeText={(text) => {
-                  setPin(text);
-                  setError('');
-                }}
-                mode="outlined"
-                secureTextEntry
-                keyboardType="numeric"
-                maxLength={6}
-                style={styles.input}
-                outlineColor={palette.border}
-                activeOutlineColor={palette.primary}
-                textColor={palette.text}
-                theme={{
-                  colors: {
-                    onSurfaceVariant: palette.mutedText,
-                    background: palette.surface,
-                  },
-                }}
-              />
-            </>
-          )}
+          {/* PIN Input */}
+          <View style={styles.inputWrapper}>
+            <View style={styles.inputIcon}>
+              <Lock size={20} color={palette.mutedText} />
+            </View>
+            <TextInput
+              placeholder="6-Digit PIN"
+              placeholderTextColor={palette.mutedText}
+              value={pin}
+              onChangeText={(text) => {
+                setPin(text);
+                setError('');
+              }}
+              style={styles.input}
+              secureTextEntry
+              keyboardType="numeric"
+              maxLength={6}
+            />
+          </View>
 
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {/* Error Message */}
+          {error ? (
+            <View style={styles.errorContainer}>
+              <AlertCircle size={16} color={palette.danger} />
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : null}
 
-          <Button
-            mode="contained"
+          {/* Primary Action Button */}
+          <TouchableOpacity
             onPress={isSignUpMode ? handleSignUp : handleSignIn}
-            style={styles.button}
-            buttonColor={palette.primary}
-            textColor="#FFFFFF">
-            {isSignUpMode ? 'Sign Up' : 'Log In'}
-          </Button>
+            style={styles.primaryButton}
+            activeOpacity={layout.activeOpacity}>
+            <Text style={styles.primaryButtonText}>
+              {isSignUpMode ? 'Initialize Account' : 'Authenticate'}
+            </Text>
+            <ArrowRight size={20} color={palette.background} strokeWidth={2.5} />
+          </TouchableOpacity>
 
+          {/* Biometric Button */}
           {!isSignUpMode && biometricsAvailable && (
-            <TouchableOpacity onPress={handleBiometricLogin} style={styles.biometricButton}>
-              <Icon name="finger-print" size={24} color={palette.primary} />
-              <Text style={styles.biometricText}>Use Biometrics</Text>
+            <TouchableOpacity 
+              onPress={handleBiometricLogin} 
+              style={styles.bioButton}
+              activeOpacity={layout.activeOpacity}>
+              <Fingerprint size={24} color={palette.accent} />
+              <Text style={styles.bioButtonText}>Biometric Access</Text>
             </TouchableOpacity>
           )}
 
-          <View style={styles.toggleContainer}>
-            <Text style={styles.toggleText}>
-              {isSignUpMode ? 'Already have an account? ' : "Don't have an account? "}
+          {/* Divider */}
+          <View style={styles.dividerContainer}>
+            <View style={styles.dividerLine} />
+          </View>
+
+          {/* Mode Switcher */}
+          <View style={styles.footer}>
+            <Text style={styles.footerText}>
+              {isSignUpMode ? 'Existing user?' : 'New to FinAI?'}
             </Text>
             <TouchableOpacity onPress={toggleMode}>
-              <Text style={styles.toggleLink}>
-                {isSignUpMode ? 'Log In' : 'Sign Up'}
+              <Text style={styles.footerLink}>
+                {isSignUpMode ? 'Log In' : 'Create ID'}
               </Text>
             </TouchableOpacity>
           </View>
         </View>
+
+        {/* Safe Area Spacer */}
+        <View style={{ height: 40 }} />
       </ScrollView>
     </KeyboardAvoidingView>
   );
 };
 
+// --- STYLES ---
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: palette.background,
   },
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: palette.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: palette.mutedText,
+    marginTop: spacing.md,
+    fontSize: 16,
+    letterSpacing: 0.5,
+  },
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: spacing.lg,
   },
-  content: {
+  
+  // Header Styles
+  headerSection: {
     alignItems: 'center',
-    paddingVertical: 40,
+    marginTop: spacing.xxl,
+    marginBottom: spacing.xl,
+  },
+  logoContainer: {
+    marginBottom: spacing.md,
+    shadowColor: palette.accent,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
   },
   logo: {
-    width: 120,
-    height: 120,
-    marginBottom: 32,
+    width: 80,
+    height: 80,
+    tintColor: palette.primary, // Applies white tint to logo if strictly monochrome
   },
-  title: {
-    fontSize: 24,
+  appTitle: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: palette.text,
+    letterSpacing: 6,
+  },
+  appSubtitle: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: palette.accent,
+    letterSpacing: 3,
+    marginTop: spacing.xs,
+    textTransform: 'uppercase',
+  },
+
+  // Form Styles
+  formContainer: {
+    width: '100%',
+    padding: spacing.lg,
+    backgroundColor: palette.surface,
+    borderRadius: layout.borderRadius,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  textGroup: {
+    marginBottom: spacing.lg,
+    alignItems: 'center',
+  },
+  heading: {
+    fontSize: 20,
     fontWeight: '700',
     color: palette.text,
-    marginBottom: 32,
+    marginBottom: spacing.xs,
     textAlign: 'center',
   },
+  subHeading: {
+    fontSize: 14,
+    color: palette.mutedText,
+    textAlign: 'center',
+  },
+  
+  // Inputs
+  inputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: palette.surfaceHighlight,
+    borderWidth: 1,
+    borderColor: palette.border,
+    borderRadius: 12, // Slightly tighter radius for inputs
+    marginBottom: spacing.md,
+    height: 56,
+  },
+  inputIcon: {
+    paddingLeft: spacing.md,
+    paddingRight: spacing.sm,
+  },
   input: {
-    width: '100%',
-    marginBottom: 16,
+    flex: 1,
+    color: palette.text,
+    fontSize: 16,
+    height: '100%',
+    paddingRight: spacing.md,
   },
-  button: {
-    width: '100%',
-    marginTop: 8,
-    paddingVertical: 6,
+  
+  // States
+  errorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)', // Red with opacity
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.2)',
+    borderRadius: 8,
+    padding: spacing.sm,
+    marginBottom: spacing.md,
+    gap: spacing.sm,
   },
-  toggleContainer: {
+  errorText: {
+    color: palette.danger,
+    fontSize: 13,
+    flex: 1,
+  },
+
+  // Buttons
+  primaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: palette.primary,
+    height: 56,
+    borderRadius: 12,
+    marginTop: spacing.xs,
+    gap: spacing.sm,
+    shadowColor: '#fff',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  primaryButtonText: {
+    color: palette.background, // Black text on white button
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  
+  bioButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.md,
+    paddingVertical: spacing.md,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+    gap: spacing.sm,
+    backgroundColor: 'transparent',
+  },
+  bioButtonText: {
+    color: palette.text,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+
+  // Footer
+  dividerContainer: {
+    marginVertical: spacing.lg,
+    alignItems: 'center',
+  },
+  dividerLine: {
+    width: 40,
+    height: 2,
+    backgroundColor: palette.border,
+    borderRadius: 1,
+  },
+  footer: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 16,
+    gap: spacing.xs,
   },
-  toggleText: {
+  footerText: {
     color: palette.mutedText,
     fontSize: 14,
   },
-  toggleLink: {
-    color: palette.primary,
+  footerLink: {
+    color: palette.accent,
     fontSize: 14,
     fontWeight: '600',
-    textDecorationLine: 'underline',
-  },
-  biometricButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    width: '100%',
-    marginTop: 16,
-    paddingVertical: 12,
-    backgroundColor: palette.card,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: palette.primary,
-  },
-  biometricText: {
-    color: palette.primary,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  deleteButton: {
-    width: '100%',
-    marginTop: 8,
-  },
-  errorText: {
-    color: palette.error,
-    fontSize: 14,
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  loadingText: {
-    fontSize: 18,
-    color: palette.text,
-    textAlign: 'center',
   },
 });

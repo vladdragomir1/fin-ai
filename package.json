@@ -17,6 +17,7 @@
     "@react-navigation/native-stack": "^7.6.2",
     "@shopify/react-native-skia": "^2.3.10",
     "date-fns": "^4.1.0",
+    "lucide-react-native": "^0.554.0",
     "react": "19.1.1",
     "react-native": "0.82.1",
     "react-native-biometrics": "^3.0.1",

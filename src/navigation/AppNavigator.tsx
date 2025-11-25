@@ -2,7 +2,13 @@ import React from 'react';
 import { NavigationContainer, Theme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import Icon from 'react-native-vector-icons/Ionicons';
+import { 
+  LayoutDashboard, 
+  Search, 
+  Star, 
+  BarChart2, 
+  Sparkles 
+} from 'lucide-react-native'; 
 import { palette } from '@/theme';
 import {
   AIChatScreen,
@@ -18,33 +24,22 @@ import type { RootStackParamList, TabParamList } from './types';
 const Tab = createBottomTabNavigator<TabParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
+// Define the Deep Dark Navigation Theme
 const navigationTheme: Theme = {
   dark: true,
   colors: {
     primary: palette.primary,
     background: palette.background,
-    card: palette.surface,
+    card: palette.surface, 
     text: palette.text,
     border: palette.border,
     notification: palette.accent,
   },
   fonts: {
-    regular: {
-      fontFamily: 'System',
-      fontWeight: '400',
-    },
-    medium: {
-      fontFamily: 'System',
-      fontWeight: '500',
-    },
-    bold: {
-      fontFamily: 'System',
-      fontWeight: '700',
-    },
-    heavy: {
-      fontFamily: 'System',
-      fontWeight: '900',
-    },
+    regular: { fontFamily: 'System', fontWeight: '400' },
+    medium: { fontFamily: 'System', fontWeight: '500' },
+    bold: { fontFamily: 'System', fontWeight: '700' },
+    heavy: { fontFamily: 'System', fontWeight: '900' },
   },
 };
 
@@ -55,56 +50,78 @@ const TabNavigator = () => (
       tabBarStyle: {
         backgroundColor: palette.surface,
         borderTopColor: palette.border,
-        height: 64,
-        paddingBottom: 10,
-        paddingTop: 6,
+        borderTopWidth: 1,
+        elevation: 0, 
+        height: 60,   
+        paddingBottom: 8,
+        paddingTop: 8,
       },
-      tabBarActiveTintColor: palette.primary,
-      tabBarInactiveTintColor: palette.mutedText,
-      // eslint-disable-next-line react/no-unstable-nested-components
-      tabBarIcon: ({ color, size }) => {
-        const icons: Record<string, string> = {
-          Home: 'home',
-          Search: 'briefcase',
-          Watchlist: 'star',
-          Statistics: 'bar-chart',
-          AI: 'flash',
-        };
-        return <Icon name={icons[route.name] ?? 'ellipse'} size={size} color={color} />;
+      tabBarActiveTintColor: palette.primary, 
+      tabBarInactiveTintColor: palette.mutedText, 
+      tabBarLabelStyle: {
+        fontSize: 10,
+        fontWeight: '600',
+        marginTop: 2,
+      },
+      tabBarIcon: ({ color, size, focused }) => {
+        const iconSize = 22;
+        const strokeWidth = focused ? 2.5 : 1.5;
+
+        switch (route.name) {
+          case 'Home':
+            return <LayoutDashboard size={iconSize} color={color} strokeWidth={strokeWidth} />;
+          case 'Search':
+            return <Search size={iconSize} color={color} strokeWidth={strokeWidth} />;
+          case 'Watchlist':
+            return <Star size={iconSize} color={color} strokeWidth={strokeWidth} />;
+          case 'Statistics':
+            return <BarChart2 size={iconSize} color={color} strokeWidth={strokeWidth} />;
+          case 'AI':
+            return <Sparkles size={iconSize} color={color} strokeWidth={strokeWidth} />;
+          default:
+            return <LayoutDashboard size={iconSize} color={color} />;
+        }
       },
     })}>
-    <Tab.Screen name="Home" component={HomeScreen} options={{ title: 'Home' }} />
+    <Tab.Screen name="Home" component={HomeScreen} options={{ title: 'Overview' }} />
     <Tab.Screen name="Search" component={CompanySearchScreen} options={{ title: 'Search' }} />
     <Tab.Screen name="Watchlist" component={WatchlistScreen} options={{ title: 'Watchlist' }} />
-    <Tab.Screen name="Statistics" component={StatisticsScreen} options={{ title: 'Statistics' }} />
-    <Tab.Screen name="AI" component={AIChatScreen} options={{ title: 'AI Analyst' }} />
+    <Tab.Screen name="Statistics" component={StatisticsScreen} options={{ title: 'Analytics' }} />
+    <Tab.Screen name="AI" component={AIChatScreen} options={{ title: 'FinAI' }} />
   </Tab.Navigator>
 );
 
 export const AppNavigator = () => (
   <NavigationContainer theme={navigationTheme}>
-    <Stack.Navigator>
-      <Stack.Screen name="Root" component={TabNavigator} options={{ headerShown: false }} />
+    <Stack.Navigator
+      screenOptions={{
+        headerStyle: { backgroundColor: palette.background },
+        headerTitleStyle: { color: palette.text, fontWeight: '600' },
+        headerTintColor: palette.primary,
+        // Removed 'headerBackTitleVisible' to fix TS error
+      }}
+    >
+      <Stack.Screen 
+        name="Root" 
+        component={TabNavigator} 
+        options={{ headerShown: false }} 
+      />
+      
       <Stack.Screen
         name="Settings"
         component={SettingsScreen}
         options={{
           presentation: 'card',
           title: 'Settings',
-          headerStyle: { backgroundColor: palette.surface },
-          headerTitleStyle: { color: palette.text },
-          headerTintColor: palette.text,
         }}
       />
+      
       <Stack.Screen
         name="CompanyDetails"
         component={CompanyDetailsScreen}
         options={{
           presentation: 'card',
-          title: 'Company Details',
-          headerStyle: { backgroundColor: palette.surface },
-          headerTitleStyle: { color: palette.text },
-          headerTintColor: palette.text,
+          title: 'Asset Details',
         }}
       />
     </Stack.Navigator>

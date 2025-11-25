@@ -2,15 +2,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { StockQuote, ChartDataPoint } from '@/types';
 
 // Real-time prices as of November 2025 (approximate market values)
-// These will be the baseline for offline mode
 const REAL_MARKET_PRICES: Record<string, number> = {
   AAPL: 178.50,  // Apple Inc.
   GOOGL: 142.30, // Alphabet Inc.
   MSFT: 415.20,  // Microsoft
   AMZN: 175.80,  // Amazon
   TSLA: 242.15,  // Tesla
-  NVDA: 186.60,  // NVIDIA (as shown in your screenshot)
-  GE: 300.13,    // General Electric (as shown in your screenshot)
+  NVDA: 186.60,  // NVIDIA
+  GE: 300.13,    // General Electric
   META: 485.20,  // Meta Platforms
   NFLX: 625.50,  // Netflix
   AMD: 145.80,   // Advanced Micro Devices
@@ -72,7 +71,6 @@ class OfflineDataService {
   private getLocalQuote(symbol: string): StockQuote {
     const price = REAL_MARKET_PRICES[symbol] || 100;
     
-    // Use deterministic variation based on symbol for consistency
     const seed = symbol.charCodeAt(0) + symbol.charCodeAt(symbol.length - 1);
     const variation = ((seed % 100) / 100 - 0.5) * 0.02; // Deterministic ±1%
     const change = price * variation;
@@ -94,8 +92,9 @@ class OfflineDataService {
 
   /**
    * Cache quote data locally
+   * CHANGED TO PUBLIC to fix access error in financeApiService
    */
-  private async cacheQuote(symbol: string, quote: StockQuote): Promise<void> {
+  public async cacheQuote(symbol: string, quote: StockQuote): Promise<void> {
     try {
       const key = `${this.STORAGE_KEY_PREFIX}quote_${symbol}`;
       await AsyncStorage.setItem(key, JSON.stringify(quote));
@@ -106,8 +105,9 @@ class OfflineDataService {
 
   /**
    * Get cached quote
+   * CHANGED TO PUBLIC to fix access error in financeApiService
    */
-  private async getCachedQuote(symbol: string): Promise<StockQuote | null> {
+  public async getCachedQuote(symbol: string): Promise<StockQuote | null> {
     try {
       const key = `${this.STORAGE_KEY_PREFIX}quote_${symbol}`;
       const data = await AsyncStorage.getItem(key);
@@ -236,9 +236,6 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Clear all cached data (useful for debugging)
-   */
   async clearCache(): Promise<void> {
     try {
       const keys = await AsyncStorage.getAllKeys();

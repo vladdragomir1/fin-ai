@@ -1,9 +1,15 @@
 import React from 'react';
-import { StyleSheet, View, TouchableOpacity, Alert, ScrollView } from 'react-native';
-import { Text } from 'react-native-paper';
-import Icon from 'react-native-vector-icons/Ionicons';
-import { SurfaceCard } from '@/components';
-import { palette, spacing } from '@/theme';
+import { StyleSheet, View, TouchableOpacity, Alert, ScrollView, Text } from 'react-native';
+import { 
+  User, 
+  LogOut, 
+  Trash2, 
+  ChevronRight, 
+  ShieldCheck, 
+  WalletCards 
+} from 'lucide-react-native';
+import { ScreenShell } from '@/components';
+import { palette, spacing, layout } from '@/theme';
 import { useAuth } from '../../App';
 import * as Keychain from 'react-native-keychain';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -14,12 +20,13 @@ import type { RootStackParamList } from '@/navigation/types';
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
-// Must match the LoginScreen keys
+// --- LOGIC CONSTANTS (Preserved) ---
 const STORAGE_KEY_USERNAME = 'username';
 const STORAGE_KEY_ALL_USERS = 'registered_users';
 const KEYCHAIN_SERVICE = 'FinanceAI_PIN';
 
 export const SettingsScreen = () => {
+  // --- HOOKS & STATE (Preserved) ---
   const { logout } = useAuth();
   const navigation = useNavigation<NavigationProp>();
   const [activeUser, setActiveUser] = React.useState<string | null>(null);
@@ -45,6 +52,7 @@ export const SettingsScreen = () => {
     };
   }, []);
 
+  // --- HANDLERS (Preserved) ---
   const handleLogout = () => {
     Alert.alert(
       'Log Out',
@@ -90,8 +98,10 @@ export const SettingsScreen = () => {
               }
               // Remove per-user watchlist and username
               try {
-                const watchlistKey = `@finai_watchlist_${currentUsername}`;
-                await AsyncStorage.removeItem(watchlistKey);
+                if (currentUsername) {
+                  const watchlistKey = `@finai_watchlist_${currentUsername}`;
+                  await AsyncStorage.removeItem(watchlistKey);
+                }
               } catch (err) {
                 console.warn('Failed removing per-user watchlist during account deletion', err);
               }
@@ -111,126 +121,225 @@ export const SettingsScreen = () => {
     );
   };
 
+  // --- UI COMPONENTS ---
+  const SettingRow = ({ 
+    icon: Icon, 
+    label, 
+    subLabel, 
+    onPress, 
+    isDanger = false 
+  }: { 
+    icon: any, 
+    label: string, 
+    subLabel?: string, 
+    onPress: () => void, 
+    isDanger?: boolean 
+  }) => (
+    <TouchableOpacity 
+      style={[styles.row, isDanger && styles.rowDanger]} 
+      onPress={onPress}
+      activeOpacity={layout.activeOpacity}
+    >
+      <View style={[styles.iconContainer, isDanger && styles.iconDanger]}>
+        <Icon size={20} color={isDanger ? palette.danger : palette.text} strokeWidth={1.5} />
+      </View>
+      <View style={styles.rowContent}>
+        <Text style={[styles.rowLabel, isDanger && styles.textDanger]}>{label}</Text>
+        {subLabel && <Text style={styles.rowSubLabel}>{subLabel}</Text>}
+      </View>
+      {!isDanger && <ChevronRight size={16} color={palette.surfaceHighlight} />}
+    </TouchableOpacity>
+  );
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <SurfaceCard style={styles.profileCard}>
-        <View style={styles.profileInner}>
-          <View style={styles.avatar}>
-            <Icon name="person" size={36} color="#ffffff" />
+    <ScreenShell>
+      <ScrollView contentContainerStyle={styles.content}>
+        
+        {/* Profile Card */}
+        <View style={styles.profileSection}>
+          <View style={styles.profileCard}>
+            <View style={styles.avatarRing}>
+              <View style={styles.avatar}>
+                <User size={32} color={palette.primary} strokeWidth={1.5} />
+              </View>
+            </View>
+            <View style={styles.profileInfo}>
+              <Text style={styles.username}>{activeUser || 'Guest User'}</Text>
+              <View style={styles.statusBadge}>
+                <ShieldCheck size={10} color={palette.success} />
+                <Text style={styles.statusText}>Secure Session Active</Text>
+              </View>
+            </View>
           </View>
-          <Text style={styles.loggedText}>Logged in as</Text>
-          <Text style={styles.username}>{activeUser || '—'}</Text>
         </View>
-      </SurfaceCard>
 
-      <Text style={styles.actionsHeader}>Account Actions</Text>
-
-      <TouchableOpacity onPress={handleLogout}>
-        <SurfaceCard style={styles.logoutCard}>
-          <View style={styles.settingRow}>
-            <Icon name="log-out-outline" size={20} color={palette.text} />
-            <View style={styles.settingText}>
-              <Text style={styles.settingTitle}>Log Out</Text>
-              <Text style={styles.settingDesc}>Sign out of your account</Text>
-            </View>
-            <Icon name="chevron-forward" size={20} color={palette.mutedText} />
+        {/* Account Actions */}
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>ACCOUNT MANAGEMENT</Text>
+          
+          <View style={styles.cardGroup}>
+            <SettingRow 
+              icon={WalletCards} 
+              label="Subscription Plan" 
+              subLabel="Standard Tier (Free)"
+              onPress={() => {}} 
+            />
+            <View style={styles.divider} />
+            <SettingRow 
+              icon={LogOut} 
+              label="Log Out" 
+              subLabel="End current session safely"
+              onPress={handleLogout} 
+            />
           </View>
-        </SurfaceCard>
-      </TouchableOpacity>
+        </View>
 
-      <TouchableOpacity onPress={handleDeleteAccount}>
-        <SurfaceCard style={styles.deleteCard}>
-          <View style={styles.settingRow}>
-            <Icon name="trash-outline" size={20} color={palette.background} />
-            <View style={styles.settingText}>
-              <Text style={styles.deleteTitle}>Delete Account</Text>
-              <Text style={[styles.settingDesc, { color: palette.background }]}>Permanently remove your account</Text>
-            </View>
+        {/* Danger Zone */}
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>DANGER ZONE</Text>
+          <View style={[styles.cardGroup, styles.dangerGroup]}>
+            <SettingRow 
+              icon={Trash2} 
+              label="Delete Account" 
+              subLabel="Permanently erase all personal data"
+              onPress={handleDeleteAccount}
+              isDanger
+            />
           </View>
-        </SurfaceCard>
-      </TouchableOpacity>
-    </ScrollView>
+        </View>
+
+        <Text style={styles.versionText}>FinAI Terminal v1.0.4</Text>
+      </ScrollView>
+    </ScreenShell>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: palette.background,
-  },
   content: {
-    padding: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.xxl,
   },
-  settingCard: {
-    marginBottom: spacing.sm,
-  },
-  settingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-  settingText: {
-    flex: 1,
-  },
-  settingTitle: {
-    color: palette.text,
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  settingDesc: {
-    color: palette.mutedText,
-    fontSize: 13,
-    lineHeight: 18,
+
+  // Profile
+  profileSection: {
+    marginTop: spacing.xl,
+    marginBottom: spacing.xl,
   },
   profileCard: {
-    paddingVertical: spacing.lg,
-    marginBottom: spacing.md,
-    borderRadius: 12,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: palette.card,
+    backgroundColor: palette.surface,
+    padding: spacing.md,
+    borderRadius: layout.borderRadius,
+    borderWidth: 1,
+    borderColor: palette.border,
   },
-  profileInner: {
-    alignItems: 'center',
+  avatarRing: {
+    padding: 3,
+    borderWidth: 1,
+    borderColor: palette.surfaceHighlight,
+    borderRadius: 99,
+    marginRight: spacing.md,
   },
   avatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: palette.primary,
-    alignItems: 'center',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: palette.surfaceHighlight,
     justifyContent: 'center',
-    marginBottom: spacing.sm,
+    alignItems: 'center',
   },
-  loggedText: {
-    color: palette.mutedText,
-    fontSize: 13,
-    marginBottom: 6,
+  profileInfo: {
+    flex: 1,
   },
   username: {
     color: palette.text,
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
+    marginBottom: 4,
   },
-  actionsHeader: {
-    color: palette.primary,
-    fontSize: 13,
-    marginVertical: spacing.md,
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  statusText: {
+    color: palette.success,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+
+  // Section
+  section: {
+    marginBottom: spacing.xl,
+  },
+  sectionHeader: {
+    color: palette.mutedText,
+    fontSize: 11,
     fontWeight: '700',
-  },
-  logoutCard: {
+    letterSpacing: 1.5,
     marginBottom: spacing.sm,
-    paddingVertical: spacing.md,
+    marginLeft: 4,
   },
-  deleteCard: {
-    marginTop: spacing.sm,
-    paddingVertical: spacing.md,
-    backgroundColor: palette.danger,
+  cardGroup: {
+    backgroundColor: palette.surface,
+    borderRadius: layout.borderRadius,
+    borderWidth: 1,
+    borderColor: palette.border,
+    overflow: 'hidden',
   },
-  deleteTitle: {
-    color: palette.background,
-    fontSize: 16,
-    fontWeight: '700',
+  dangerGroup: {
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    backgroundColor: 'rgba(239, 68, 68, 0.05)',
+  },
+
+  // Row
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+  },
+  rowDanger: {
+    backgroundColor: 'transparent',
+  },
+  iconContainer: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: palette.surfaceHighlight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: spacing.md,
+  },
+  iconDanger: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+  },
+  rowContent: {
+    flex: 1,
+  },
+  rowLabel: {
+    color: palette.text,
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  textDanger: {
+    color: palette.danger,
+  },
+  rowSubLabel: {
+    color: palette.mutedText,
+    fontSize: 12,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: palette.surfaceHighlight,
+    marginLeft: 64, // offset for icon width
+  },
+
+  versionText: {
+    textAlign: 'center',
+    color: palette.surfaceHighlight,
+    fontSize: 12,
+    marginTop: spacing.lg,
   },
 });

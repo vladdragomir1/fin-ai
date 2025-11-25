@@ -52,7 +52,7 @@ class FinanceApiService {
         return err && (err.name === 'AbortError' || (typeof err.message === 'string' && err.message.includes('Aborted')));
       };
 
-      const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+      const sleep = (ms: number) => new Promise((resolve) => setTimeout(() => resolve(null), ms));
 
       // Attempt fetch with a small retry/backoff for transient network failures
       const maxRetries = 2;

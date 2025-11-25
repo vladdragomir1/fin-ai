@@ -1,43 +1,67 @@
 import React, { PropsWithChildren } from 'react';
-import { ScrollView, StyleSheet, View, ViewProps } from 'react-native';
+import { 
+  ScrollView, 
+  StyleSheet, 
+  View, 
+  ViewProps, 
+  StatusBar,
+  Platform
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { palette } from '@/theme';
 
 interface Props extends ViewProps {
   scrollable?: boolean;
+  safeAreaEdges?: ('top' | 'right' | 'bottom' | 'left')[];
 }
 
 export const ScreenShell = ({
   children,
-  scrollable = true,
+  scrollable = false, 
   style,
-}: PropsWithChildren<Props>) => (
-  <SafeAreaView style={styles.safeArea}>
-    {scrollable ? (
-      <ScrollView 
-        contentContainerStyle={[styles.content, style]}
-        nestedScrollEnabled={true}
-      >
-        {children}
-      </ScrollView>
-    ) : (
-      <View style={[styles.fill, style]}>{children}</View>
-    )}
-  </SafeAreaView>
-);
+  safeAreaEdges = ['top', 'left', 'right'],
+}: PropsWithChildren<Props>) => {
+  
+  const Container = scrollable ? ScrollView : View;
+
+  return (
+    <SafeAreaView 
+      style={styles.safeArea} 
+      edges={safeAreaEdges}
+    >
+      <StatusBar 
+        barStyle="light-content" 
+        backgroundColor={palette.background} 
+      />
+      
+      {scrollable ? (
+        <ScrollView
+          style={[styles.container, style]}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {children}
+        </ScrollView>
+      ) : (
+        <View style={[styles.container, style]}>
+          {children}
+        </View>
+      )}
+    </SafeAreaView>
+  );
+};
 
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: palette.background,
   },
-  fill: {
+  container: {
     flex: 1,
-    padding: 20,
-    gap: 16,
+    backgroundColor: palette.background,
   },
-  content: {
-    padding: 20,
-    gap: 16,
+  scrollContent: {
+    flexGrow: 1,
   },
 });
