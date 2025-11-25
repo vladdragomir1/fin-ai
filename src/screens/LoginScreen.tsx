@@ -15,7 +15,9 @@ import ReactNativeBiometrics from 'react-native-biometrics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { palette } from '@/theme';
 
+// 1. Add a new key to track ALL users
 const STORAGE_KEY_USERNAME = 'username';
+const STORAGE_KEY_ALL_USERS = 'registered_users'; 
 const KEYCHAIN_SERVICE = 'FinanceAI_PIN';
 
 interface LoginScreenProps {
@@ -24,6 +26,7 @@ interface LoginScreenProps {
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExplicitLogout = false }) => {
+  // ... (keep all your existing state variables exactly the same) ...
   const [hasAccount, setHasAccount] = useState<boolean | null>(null);
   const [isSignUpMode, setIsSignUpMode] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -39,18 +42,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
     checkBiometrics();
   }, []);
 
+  // ... (keep checkExistingUser, checkBiometrics, and handleBiometricLogin the same) ...
   const checkExistingUser = async () => {
     try {
-      // Check if PIN exists in Keychain
       const credentials = await Keychain.getGenericPassword({ service: KEYCHAIN_SERVICE });
-      
       if (credentials) {
-        // PIN exists
         const name = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
         setStoredUsername(name || 'User');
         setHasAccount(true);
-        
-        // If explicit logout, show full login form; otherwise show quick login
         if (isExplicitLogout) {
           setShowQuickLogin(false);
           setIsSignUpMode(false);
@@ -59,7 +58,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
           setIsSignUpMode(false);
         }
       } else {
-        // No PIN, show sign up screen
         setHasAccount(false);
         setIsSignUpMode(true);
         setShowQuickLogin(false);
@@ -78,15 +76,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
     try {
       const rnBiometrics = new ReactNativeBiometrics();
       const result = await rnBiometrics.isSensorAvailable();
-      
-      // Check if result exists and has the available property
       if (result?.available === true) {
         setBiometricsAvailable(true);
       } else {
         setBiometricsAvailable(false);
       }
     } catch (error) {
-      // Silently fail - biometrics not available on this device/emulator
       setBiometricsAvailable(false);
     }
   };
@@ -94,14 +89,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
   const handleBiometricLogin = async () => {
     try {
       const rnBiometrics = new ReactNativeBiometrics();
-      
       const { success } = await rnBiometrics.simplePrompt({
         promptMessage: 'Authenticate to log in',
         cancelButtonText: 'Cancel',
       });
 
       if (success) {
-        // Biometric authentication successful
         setError('');
         onLoginSuccess();
       } else {
@@ -113,6 +106,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
     }
   };
 
+  // 2. UPDATED: Handle Sign Up with Check
   const handleSignUp = async () => {
     if (!username.trim()) {
       setError('Please enter your name');
@@ -128,8 +122,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
     }
 
     try {
-      // Save username to AsyncStorage
-      await AsyncStorage.setItem(STORAGE_KEY_USERNAME, username.trim());
+      const newUsername = username.trim();
+
+      // A. Get the list of all existing users
+      const existingUsersJson = await AsyncStorage.getItem(STORAGE_KEY_ALL_USERS);
+      let existingUsers: string[] = existingUsersJson ? JSON.parse(existingUsersJson) : [];
+
+      // B. Check if username exists
+      if (existingUsers.includes(newUsername)) {
+        // This sets the error message which is styled in RED in your return JSX
+        setError('Username already exists'); 
+        return;
+      }
+
+      // C. If not exists, add to the list and save back
+      existingUsers.push(newUsername);
+      await AsyncStorage.setItem(STORAGE_KEY_ALL_USERS, JSON.stringify(existingUsers));
+
+      // D. Proceed with standard login (save current active user)
+      await AsyncStorage.setItem(STORAGE_KEY_USERNAME, newUsername);
       
       // Save PIN to Keychain
       await Keychain.setGenericPassword('user', pin, { service: KEYCHAIN_SERVICE });
@@ -147,6 +158,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
     }
   };
 
+  // ... (keep handleSignIn, handleDeleteAccount, toggleMode, and the return/styles exactly the same) ...
   const handleSignIn = async () => {
     if (!pin.trim()) {
       setError('Please enter your PIN');
@@ -154,13 +166,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
     }
 
     try {
-      // Get stored username from AsyncStorage
       const storedUser = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
-      
-      // Get stored PIN from Keychain
       const credentials = await Keychain.getGenericPassword({ service: KEYCHAIN_SERVICE });
       
-      // If quick login (Welcome back), only check PIN
       if (showQuickLogin) {
         if (credentials && credentials.password === pin) {
           setPin('');
@@ -172,7 +180,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
           setPin('');
         }
       } else {
-        // Full login - check both username and PIN
         if (!username.trim()) {
           setError('Please enter your username');
           return;
@@ -196,13 +203,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
 
   const handleDeleteAccount = async () => {
     try {
-      // Clear PIN from Keychain
       await Keychain.resetGenericPassword({ service: KEYCHAIN_SERVICE });
-      
-      // Clear username from AsyncStorage
       await AsyncStorage.removeItem(STORAGE_KEY_USERNAME);
-      
-      // Reset state to show sign up form
       setHasAccount(false);
       setIsSignUpMode(true);
       setStoredUsername('');
@@ -238,19 +240,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled">
         <View style={styles.content}>
-          {/* Logo */}
           <Image
             source={require('../assets/FINAI.png')}
             style={styles.logo}
             resizeMode="contain"
           />
 
-          {/* Title */}
           <Text style={styles.title}>
             {isSignUpMode ? 'Welcome to FinanceAI' : showQuickLogin ? `Welcome back, ${storedUsername}` : 'Log In to FinanceAI'}
           </Text>
 
-          {/* Sign Up Form */}
           {isSignUpMode && (
             <>
               <TextInput
@@ -297,7 +296,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
             </>
           )}
 
-          {/* Login Form */}
           {!isSignUpMode && (
             <>
               {!showQuickLogin && (
@@ -346,10 +344,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
             </>
           )}
 
-          {/* Error Message */}
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-          {/* Submit Button */}
           <Button
             mode="contained"
             onPress={isSignUpMode ? handleSignUp : handleSignIn}
@@ -359,7 +355,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
             {isSignUpMode ? 'Sign Up' : 'Log In'}
           </Button>
 
-          {/* Biometric Login Button (only for login, not sign up) */}
           {!isSignUpMode && biometricsAvailable && (
             <TouchableOpacity onPress={handleBiometricLogin} style={styles.biometricButton}>
               <Icon name="finger-print" size={24} color={palette.primary} />
@@ -367,7 +362,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
             </TouchableOpacity>
           )}
 
-          {/* Toggle Link */}
           <View style={styles.toggleContainer}>
             <Text style={styles.toggleText}>
               {isSignUpMode ? 'Already have an account? ' : "Don't have an account? "}

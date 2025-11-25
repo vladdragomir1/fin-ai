@@ -156,7 +156,7 @@ export const CompanySearchScreen = () => {
 
       {!searched && (
         <SurfaceCard>
-          <Text style={styles.welcomeText}>👋 Search for a company</Text>
+          <Text style={styles.welcomeText}>Search for a company</Text>
           <Text style={styles.hintText}>
             Enter the ticker symbol or company name to view details and financial analysis.
           </Text>

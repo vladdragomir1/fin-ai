@@ -21,6 +21,7 @@ export type RootStackParamList = {
     symbol: string;
     name: string;
   };
+  Login: undefined;
 };
 
 export type RootStackScreenProps<T extends keyof RootStackParamList> = NativeStackScreenProps<

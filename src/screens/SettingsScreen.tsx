@@ -13,7 +13,9 @@ import type { RootStackParamList } from '@/navigation/types';
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
+// Must match the LoginScreen keys
 const STORAGE_KEY_USERNAME = 'username';
+const STORAGE_KEY_ALL_USERS = 'registered_users';
 const KEYCHAIN_SERVICE = 'FinanceAI_PIN';
 
 export const SettingsScreen = () => {
@@ -25,15 +27,8 @@ export const SettingsScreen = () => {
       'Log Out',
       'Are you sure you want to log out?',
       [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: 'Log Out',
-          onPress: () => logout(),
-          style: 'destructive',
-        },
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Log Out', onPress: () => logout(), style: 'destructive' },
       ],
     );
   };
@@ -41,18 +36,31 @@ export const SettingsScreen = () => {
   const handleDeleteAccount = async () => {
     Alert.alert(
       'Delete Account',
-      'Are you sure you want to permanently delete your account? This action cannot be undone.',
+      'Are you sure you want to permanently delete your account?',
       [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
+        { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           onPress: async () => {
             try {
+              // 1. Get the current username
+              const currentUsername = await AsyncStorage.getItem(STORAGE_KEY_USERNAME);
+
+              // 2. Remove it from the list of ALL users
+              if (currentUsername) {
+                const existingUsersJson = await AsyncStorage.getItem(STORAGE_KEY_ALL_USERS);
+                if (existingUsersJson) {
+                   const existingUsers: string[] = JSON.parse(existingUsersJson);
+                   // Filter out the deleted user
+                   const updatedUsers = existingUsers.filter(u => u !== currentUsername);
+                   await AsyncStorage.setItem(STORAGE_KEY_ALL_USERS, JSON.stringify(updatedUsers));
+                }
+              }
+
+              // 3. Clear Login Credentials
               await Keychain.resetGenericPassword({ service: KEYCHAIN_SERVICE });
               await AsyncStorage.removeItem(STORAGE_KEY_USERNAME);
+              
               logout();
             } catch (error) {
               console.error('Error deleting account:', error);
