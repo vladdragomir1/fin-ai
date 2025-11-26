@@ -80,7 +80,7 @@ class FinanceApiService {
 
           // If API returns rate-limit note or error message, do not retry
           if (data['Note'] || data['Error Message']) {
-            console.error('❌ Alpha Vantage Error:', data['Error Message'] || data['Note']);
+            console.warn('❌ Alpha Vantage Error:', data['Error Message'] || data['Note']);
             // ensure we don't attempt further retries
             lastError = data['Note'] || data['Error Message'];
             break;
@@ -100,7 +100,7 @@ class FinanceApiService {
 
           // If we've exhausted retries, break and fall through to fallback logic
           if (attempt > maxRetries) {
-            console.error('Fetch failed after retries:', err);
+            console.warn('Fetch failed after retries:', err);
             break;
           }
 
@@ -163,7 +163,7 @@ class FinanceApiService {
 
       return cached || [];
     } catch (error) {
-      console.error('❌ Error searching companies:', error);
+    console.warn('❌ Error searching companies:', error);
       // Try SQLite first, then AsyncStorage
       try {
         const cached = await databaseService.getSearchCache(query);
@@ -219,7 +219,7 @@ class FinanceApiService {
       const data = await response.json();
 
       if (data['Note']) {
-        console.log('⚠️ Rate limit - checking old cache');
+        console.warn('⚠️ Rate limit - checking old cache');
         try {
           const oldCached = await databaseService.getStockQuote(symbol, Infinity);
           if (oldCached) return oldCached;
@@ -270,7 +270,7 @@ class FinanceApiService {
 
       return null;
     } catch (error) {
-      console.error('Error fetching stock quote:', error);
+      console.warn('Error fetching stock quote:', error);
       try {
         const oldCached = await databaseService.getStockQuote(symbol, Infinity);
         if (oldCached) return oldCached;
@@ -331,7 +331,7 @@ class FinanceApiService {
 
       return overview;
     } catch (error) {
-      console.error('Error fetching company overview:', error);
+      console.warn('Error fetching company overview:', error);
       return await databaseService.getCompanyOverview(symbol, Infinity);
     }
   }
@@ -377,7 +377,7 @@ class FinanceApiService {
 
       return metrics;
     } catch (error) {
-      console.error('Error fetching financial metrics:', error);
+      console.warn('Error fetching financial metrics:', error);
       return await databaseService.getFinancialMetrics(symbol, Infinity);
     }
   }
@@ -482,7 +482,7 @@ class FinanceApiService {
       
       return await databaseService.getHistoricalData(symbol, range, Infinity) || this.getMockChartData(symbol, range);
     } catch (error) {
-      console.error('❌ Error fetching historical data:', error);
+      console.warn('❌ Error fetching historical data:', error);
       return await databaseService.getHistoricalData(symbol, range, Infinity) || this.getMockChartData(symbol, range);
     }
   }

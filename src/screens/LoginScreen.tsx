@@ -306,7 +306,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
             />
           </View>
           <Text style={styles.appTitle}>FINAI</Text>
-          <Text style={styles.appSubtitle}>INTELLIGENCE ASSET</Text>
+          <Text style={styles.appSubtitle}>INTELLIGENT ASSET</Text>
         </View>
 
         {/* Form Container */}

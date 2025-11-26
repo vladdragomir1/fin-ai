@@ -11,16 +11,6 @@ interface Props {
 
 export const TradingViewChart = ({ symbol, height = 400 }: Props) => {
   const netInfo = useNetInfo();
-
-  // If offline, show a friendly message
-  if (netInfo.isConnected === false) { 
-    return (
-      <View style={[styles.container, { height, justifyContent: 'center', alignItems: 'center' }]}>
-        <Text style={styles.offlineText}>Chart unavailable offline</Text>
-      </View>
-    );
-  }
-
   const getExchange = (sym: string): string => {
     const nyseStocks = [
       'GE', 'IBM', 'DIS', 'BA', 'WMT', 'JPM', 'V', 'MA', 'BAC', 'C', 'WFC',
@@ -54,7 +44,6 @@ export const TradingViewChart = ({ symbol, height = 400 }: Props) => {
   };
 
   const fullSymbol = `${getExchange(symbol)}:${symbol}`;
-  
   const htmlContent = useMemo(() => {
     return `
 <!DOCTYPE html>
@@ -105,8 +94,17 @@ export const TradingViewChart = ({ symbol, height = 400 }: Props) => {
     `;
   }, [fullSymbol]);
 
+  // If offline, render placeholder but still keep hooks order above
+  if (netInfo.isConnected === false) {
+    return (
+      <View style={[styles.container, { height, justifyContent: 'center', alignItems: 'center' }]}> 
+        <Text style={styles.offlineText}>Chart unavailable offline</Text>
+      </View>
+    );
+  }
+
   return (
-    <View style={[styles.container, { height }]}>
+    <View style={[styles.container, { height }]}> 
       <WebView
         source={{ html: htmlContent }}
         style={styles.webview}
