@@ -1,7 +1,0 @@
-{
-    "java.configuration.updateBuildConfiguration": "automatic",
-    "files.exclude": {
-        "**/android/app/build.gradle": true
-    },
-    "java.compile.nullAnalysis.mode": "automatic"
-}
