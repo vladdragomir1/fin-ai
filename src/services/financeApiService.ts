@@ -2,9 +2,7 @@ import type { Company, CompanyOverview, StockQuote, FinancialMetrics } from '@/t
 import { databaseService } from './databaseService';
 import { offlineDataService } from './offlineDataService';
 
-// Alpha Vantage API
-const ALPHA_VANTAGE_KEY = '32ZVJQ51SCJUUZZR';
-const ALPHA_VANTAGE_URL = 'https://www.alphavantage.co/query';
+import { ALPHA_VANTAGE_KEY, ALPHA_VANTAGE_URL } from '@env';
 
 class FinanceApiService {
   private initialized = false;
