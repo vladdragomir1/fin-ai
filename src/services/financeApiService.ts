@@ -27,7 +27,7 @@ class FinanceApiService {
       }
 
       if (cached) {
-        console.log('✅ Using cached search results from SQLite');
+        console.log('Using cached search results from SQLite');
         return cached;
       }
 
@@ -35,7 +35,7 @@ class FinanceApiService {
       try {
         const asCached = await offlineDataService.getCachedSearchResults(query);
         if (asCached && asCached.length > 0) {
-          console.log('✅ Using cached search results from AsyncStorage');
+          console.log('Using cached search results from AsyncStorage');
           return asCached;
         }
       } catch (asErr) {

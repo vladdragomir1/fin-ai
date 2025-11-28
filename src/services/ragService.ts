@@ -1,8 +1,13 @@
 import { databaseService } from './databaseService';
+import { financeApiService } from './financeApiService';
 
 /**
  * RAG (Retrieval Augmented Generation) Service
- * Prepares financial data context for Phi-3-mini local LLM
+ * Prepares financial data context for Llama-3.2 local LLM
+ * Features:
+ * - Real-Time Data Fetching (API -> SQLite -> AI)
+ * - Intelligent Name Matching (e.g. "Apple" -> "AAPL")
+ * - Smart Context Formatting
  */
 
 interface RAGContext {
@@ -12,10 +17,35 @@ interface RAGContext {
 }
 
 class RAGService {
+
+  /**
+   * Helper: Trigger a fresh data fetch from API before analyzing.
+   * This updates the SQLite cache so the AI has the latest numbers.
+   */
+  private async refreshCompanyData(symbol: string): Promise<void> {
+    try {
+      console.log(`RAG: Checking for fresh data for ${symbol}...`);
+      // We use Promise.allSettled so if one call fails (e.g. rate limit), the others still complete.
+      await Promise.allSettled([
+        financeApiService.getStockQuote(symbol),
+        financeApiService.getCompanyOverview(symbol),
+        financeApiService.getFinancialMetrics(symbol),
+      ]);
+    } catch (error) {
+      // If offline, we just log a warning and proceed with existing DB data
+      console.warn(`RAG: Could not refresh ${symbol} (using cached data)`, error);
+    }
+  }
+
   /**
    * Build context for LLM about a specific company
+   * UPDATED: Fetches fresh API data first
    */
   async buildCompanyContext(symbol: string): Promise<string> {
+    // 1. TRIGGER REFRESH (API -> SQLite)
+    await this.refreshCompanyData(symbol);
+
+    // 2. READ from SQLite (Now contains fresh data)
     const data = await databaseService.getCompanyDataForRAG(symbol);
     
     if (!data.quote && !data.overview && !data.metrics) {
@@ -27,8 +57,7 @@ class RAGService {
     // Company Overview
     if (data.overview) {
       context += `Company: ${data.overview.name}\n`;
-      context += `Sector: ${data.overview.sector}\n`;
-      context += `Industry: ${data.overview.industry}\n`;
+      context += `Sector: ${data.overview.sector} | Industry: ${data.overview.industry}\n`;
       context += `Exchange: ${data.overview.exchange}\n`;
       if (data.overview.employees) {
         context += `Employees: ${data.overview.employees.toLocaleString()}\n`;
@@ -85,8 +114,12 @@ class RAGService {
 
   /**
    * Build context for comparing multiple companies
+   * UPDATED: Fetches fresh data for ALL symbols
    */
   async buildComparisonContext(symbols: string[]): Promise<string> {
+    // 1. Refresh all companies in parallel
+    await Promise.allSettled(symbols.map(s => this.refreshCompanyData(s)));
+
     let context = `Comparing ${symbols.length} companies:\n\n`;
 
     for (const symbol of symbols) {
@@ -123,6 +156,9 @@ class RAGService {
     if (symbols.length === 0) {
       return 'No cached market data available. Search for companies first to build the knowledge base.';
     }
+
+    // Note: We do NOT refresh all symbols here because calling API for 20+ companies 
+    // at once would instantly hit the Alpha Vantage rate limit. We use cached data only.
 
     let context = `Market Overview (${symbols.length} companies in knowledge base):\n\n`;
 
@@ -164,57 +200,105 @@ class RAGService {
 
   /**
    * Extract relevant context based on user query
+   * FIXED: Now searches for Company Names (e.g. "Apple") not just Symbols ("AAPL")
    */
   async extractRelevantContext(query: string): Promise<string> {
-    // Detect if query is about specific company (contains stock symbol)
-    const symbolMatch = query.match(/\b[A-Z]{1,5}\b/);
-    
-    if (symbolMatch) {
-      const symbol = symbolMatch[0];
-      return await this.buildCompanyContext(symbol);
-    }
+    const cleanQuery = query.trim();
 
-    // Detect comparison queries
-    const compareKeywords = ['compare', 'vs', 'versus', 'difference between'];
-    if (compareKeywords.some(keyword => query.toLowerCase().includes(keyword))) {
-      const symbols = query.match(/\b[A-Z]{1,5}\b/g);
-      if (symbols && symbols.length >= 2) {
-        return await this.buildComparisonContext(symbols);
+    // 1. Try to find a Symbol directly (e.g. "AAPL", "MSFT")
+    const symbolMatch = cleanQuery.match(/\b[A-Za-z]{1,5}\b/);
+    if (symbolMatch) {
+      const potentialSymbol = symbolMatch[0].toUpperCase();
+      // Verify if we actually have data for this symbol
+      const data = await databaseService.getCompanyOverview(potentialSymbol);
+      if (data) {
+        return await this.buildCompanyContext(potentialSymbol);
       }
     }
 
-    // General market query
+    // 2. Try to find Company Name in Database (e.g. "Apple", "Tesla")
+    // We get all cached companies and check if the query contains their name
+    const allSymbols = await databaseService.getAllCachedSymbols();
+    for (const sym of allSymbols) {
+      const overview = await databaseService.getCompanyOverview(sym);
+      if (overview && overview.name) {
+        // If query contains "Apple" and we have "Apple Inc." in DB
+        // We match only the first word to be safe (e.g. "Apple" matches "Apple Inc")
+        if (cleanQuery.toLowerCase().includes(overview.name.toLowerCase().split(' ')[0])) {
+           console.log(`RAG: Found match for name "${overview.name}" -> Symbol ${sym}`);
+           return await this.buildCompanyContext(sym);
+        }
+      }
+    }
+
+    // 3. Comparison Logic
+    const compareKeywords = ['compare', 'vs', 'versus', 'difference'];
+    if (compareKeywords.some(k => cleanQuery.toLowerCase().includes(k))) {
+      // Find all symbols mentioned in the query
+      const foundSymbols: string[] = [];
+      for (const sym of allSymbols) {
+         if (cleanQuery.toUpperCase().includes(sym)) foundSymbols.push(sym);
+      }
+      if (foundSymbols.length >= 2) {
+        return await this.buildComparisonContext(foundSymbols);
+      }
+    }
+
+    // 4. Fallback for general market queries
     const marketKeywords = ['market', 'overview', 'sector', 'industry', 'general'];
-    if (marketKeywords.some(keyword => query.toLowerCase().includes(keyword))) {
+    if (marketKeywords.some(k => cleanQuery.toLowerCase().includes(k))) {
       return await this.buildMarketContext();
     }
 
     // Default: return general guidance
     return `I can help you analyze financial data. Ask me about:
-- Specific companies (use ticker symbols like AAPL, GOOGL, MSFT)
-- Compare companies (e.g., "compare AAPL vs GOOGL")
-- Market overview and sectors
-- Financial metrics and analysis
+- Specific companies (e.g., "Analyze Apple" or "AAPL")
+- Compare companies (e.g., "compare Apple vs Microsoft")
+- Market overview
 
 Note: Make sure to search for companies first to add them to my knowledge base.`;
   }
 
   /**
-   * Format prompt for Phi-3-mini with context
+   * Format prompt for Llama-3.2
    */
   async formatPromptForLLM(userQuery: string): Promise<string> {
     const context = await this.extractRelevantContext(userQuery);
 
-    return `<|system|>
-You are a professional financial analyst AI assistant. You have access to real-time financial data from a local database. Provide accurate, data-driven insights based on the context provided. Be concise, professional, and helpful.
-<|end|>
-<|user|>
-Context:
+    return `<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    
+You are FinAI, a senior investment strategist and expert financial analyst.
+Your goal is to provide accurate, data-driven, and concise market insights based STRICTLY on the provided Context Data.
+
+### PRIME DIRECTIVES (ANTI-HALLUCINATION RULES):
+1.  **Source of Truth:** The "Context Data" below is your ONLY source of truth. If a fact is not in the context, DO NOT invent it.
+2.  **Missing Data:** If the user asks for a metric (e.g., "What is the Dividend?") and it is not in the context, state clearly: "I do not have current dividend data for this company in the local database."
+3.  **No External Knowledge:** Do not use your pre-training knowledge to guess stock prices. Old training data is obsolete. Only use the price provided in the context.
+4.  **No Speculation:** Do not predict the future price (e.g., "It will go up tomorrow") unless there is a clear trend in the context. Use phrases like "The current trend suggests..." instead of "It will..."
+5. **Use Exact Figures:** Always quote exact figures from the context when answering (e.g., "The P/E ratio is 25.4" not "The P/E ratio is around 25").
+6. **Admit Uncertainty:** If the context is insufficient to answer confidently, say "The provided data is insufficient to draw a conclusion on that matter."
+7. **Stay Relevant:** Only discuss information directly related to the user's query and the provided context.
+8. **Tone and Style:** Maintain a professional and analytical tone. Avoid casual language or humor.
+
+
+
+### ANALYST BEHAVIOR:
+1.  **Explain the "Why":** Don't just list numbers. If P/E is > 30, mention it implies high growth expectations or overvaluation. If P/E is < 15, mention it might be a value stock.
+2.  **Contextualize:** If the stock is down (-2%), mention if this is a buying opportunity or a bearish signal based on the technicals provided.
+3.  **Professional Tone:** Be confident, professional, but concise. Avoid robotic phrases like "According to the provided text."
+4.  **Format:** Use **Bold** for key metrics (e.g., **Price**, **P/E Ratio**) to make it readable on a phone screen.
+5. **Summarize:** If the context is long, provide a brief summary of key points before diving into details.
+6. **Overall Advice:** If asked for buy/sell advice, provide a balanced view based on fundamentals and recent trends, but always remind the user to do their own research.
+7. **Analyze Trends:** If recent price history is provided, comment on short-term trends (e.g., "The stock has risen 5% over the last week, indicating positive momentum.")
+8. **Comparisons:** When comparing companies, highlight differences in valuation metrics, recent performance, and sector trends.
+9. **Investment Horizon:** Tailor advice based on implied investment horizon (e.g., long-term vs short-term) if mentioned by the user.
+### 📉 CONTEXT DATA (LIVE MARKET INFO):
 ${context}
 
-Question: ${userQuery}
-<|end|>
-<|assistant|>`;
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+${userQuery}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+`;
   }
 
   /**

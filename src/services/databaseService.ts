@@ -16,14 +16,14 @@ class DatabaseService {
    */
   async initialize(): Promise<void> {
     try {
-      console.log('🗄️ Initializing SQLite database...');
+      console.log('Initializing SQLite database...');
       
       this.db = open({ name: this.DB_NAME });
 
       await this.createTables();
-      console.log('✅ Database initialized successfully');
+      console.log('Database initialized successfully');
     } catch (error) {
-      console.error('❌ Error initializing database:', error);
+      console.error('Error initializing database:', error);
       throw error;
     }
   }
@@ -127,7 +127,7 @@ class DatabaseService {
     await this.db.execute(`CREATE INDEX IF NOT EXISTS idx_historical_symbol ON historical_data(symbol);`);
     await this.db.execute(`CREATE INDEX IF NOT EXISTS idx_historical_date ON historical_data(date);`);
 
-    console.log('✅ Database tables created');
+    console.log('Database tables created');
   }
 
   /**
@@ -409,7 +409,7 @@ class DatabaseService {
     await this.db.execute(`DELETE FROM historical_data WHERE cached_at < ?`, [cutoff]);
     await this.db.execute(`DELETE FROM search_cache WHERE cached_at < ?`, [cutoff]);
 
-    console.log('✅ Old cache data cleared');
+    console.log('Old cache data cleared');
   }
 
   /**
@@ -419,7 +419,7 @@ class DatabaseService {
     if (this.db) {
       this.db.close();
       this.db = null;
-      console.log('✅ Database closed');
+      console.log('Database closed');
     }
   }
 }

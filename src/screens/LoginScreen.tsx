@@ -342,7 +342,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
               <Lock size={20} color={palette.mutedText} />
             </View>
             <TextInput
-              placeholder="6-Digit PIN"
+              placeholder="Enter PIN"
               placeholderTextColor={palette.mutedText}
               value={pin}
               onChangeText={(text) => {

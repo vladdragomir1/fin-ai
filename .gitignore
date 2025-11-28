@@ -83,4 +83,8 @@ yarn-error.log
 *.swp
 *.swo
 
+#ai models
+*.gguf
+*.bin
+
 .env

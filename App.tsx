@@ -1,16 +1,15 @@
 import React, { useState, createContext, useContext } from 'react';
 import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { AppProvider } from '@/context/AppContext';
+// REMOVED: import { AppProvider } from '@/context/AppContext';
 import { WatchlistProvider } from '@/context/WatchlistContext';
 import { AppNavigator } from '@/navigation/AppNavigator';
 import { LoginScreen } from '@/screens';
 import { palette } from '@/theme';
+
+// Kept these imports in case you use them for logic later, strictly optional here
 import * as Keychain from 'react-native-keychain';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-const STORAGE_KEY_USERNAME = 'username';
-const KEYCHAIN_SERVICE = 'FinanceAI_PIN';
 
 interface AuthContextType {
   logout: () => Promise<void>;
@@ -35,8 +34,7 @@ const App = () => {
     setIsExplicitLogout(false);
   };
 
-  const handleLogout = () => {
-    // Mark as explicit logout and set authenticated to false
+  const handleLogout = async () => {
     setIsExplicitLogout(true);
     setIsAuthenticated(false);
   };
@@ -44,16 +42,16 @@ const App = () => {
   return (
     <SafeAreaProvider>
       <AuthContext.Provider value={{ logout: handleLogout }}>
-        <AppProvider>
-          <WatchlistProvider>
-            <StatusBar barStyle="light-content" backgroundColor={palette.background} />
-            {isAuthenticated ? (
-              <AppNavigator />
-            ) : (
-              <LoginScreen onLoginSuccess={handleLoginSuccess} isExplicitLogout={isExplicitLogout} />
-            )}
-          </WatchlistProvider>
-        </AppProvider>
+        {/* REMOVED: <AppProvider> wrapper */}
+        <WatchlistProvider>
+          <StatusBar barStyle="light-content" backgroundColor={palette.background} />
+          {isAuthenticated ? (
+            <AppNavigator />
+          ) : (
+            <LoginScreen onLoginSuccess={handleLoginSuccess} isExplicitLogout={isExplicitLogout} />
+          )}
+        </WatchlistProvider>
+        {/* REMOVED: </AppProvider> */}
       </AuthContext.Provider>
     </SafeAreaProvider>
   );

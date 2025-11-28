@@ -1,144 +1,91 @@
-import { format } from 'date-fns';
-import { Budget, PredictionInsight, Transaction } from '@/types';
 import { ragService } from './ragService';
 import { databaseService } from './databaseService';
+import { LlamaContext, initLlama } from 'llama.rn';
+import RNFS from 'react-native-fs';
 
-export interface AiContext {
-  transactions: Transaction[];
-  budgets: Budget[];
-  insights: PredictionInsight[];
-}
-
-const clamp = (value: number) => Math.round(value * 100) / 100;
-
-const summarizeTransactions = (transactions: Transaction[]) => {
-  const totals = transactions.reduce(
-    (acc, trx) => {
-      if (trx.type === 'income') {
-        acc.income += trx.amount;
-      } else {
-        acc.expense += trx.amount;
-      }
-      return acc;
-    },
-    { income: 0, expense: 0 },
-  );
-
-  const balance = totals.income - totals.expense;
-  const biggest = [...transactions]
-    .filter(trx => trx.type === 'expense')
-    .sort((a, b) => b.amount - a.amount)[0];
-
-  return {
-    ...totals,
-    balance,
-    biggestSpender: biggest?.category,
-    biggestAmount: biggest?.amount ?? 0,
-  };
-};
-
-const buildBudgetNarrative = (budgets: Budget[]) => {
-  if (!budgets.length) {
-    return 'Nu există bugete definite pentru această lună.';
-  }
-  const risks = budgets.filter(b => b.spent / b.limit >= 0.75);
-  if (!risks.length) {
-    return 'Toate bugetele sunt bine calibrate și sub control.';
-  }
-  return `Atenție la ${risks
-    .map(b => b.category)
-    .join(', ')} — ești peste 75% din plafon.`;
-};
-
-const pickInsight = (insights: PredictionInsight[]) => {
-  if (!insights.length) {
-    return undefined;
-  }
-  return insights.sort((a, b) => b.impact - a.impact)[0];
-};
+// 1. Setup Model Path
+const MODEL_FILENAME = 'llama-3.2-1b-instruct-q4_k_m.gguf';
+const MODEL_PATH = `${RNFS.ExternalDirectoryPath}/${MODEL_FILENAME}`;
 
 export const AiService = {
-  /**
-   * Detect if query is about financial analysis (companies, stocks)
-   */
-  isFinancialQuery(prompt: string): boolean {
-    const financialKeywords = [
-      'stock', 'company', 'market', 'price', 'share', 'investment',
-      'pe ratio', 'eps', 'dividend', 'sector', 'industry', 'analyse',
-      'analyze', 'compare', 'ticker', 'nasdaq', 'nyse', 'worth',
-      'should i buy', 'should i invest', 'valuation'
-    ];
-    
-    const lowerPrompt = prompt.toLowerCase();
-    return financialKeywords.some(keyword => lowerPrompt.includes(keyword)) ||
-           /\b[A-Z]{1,5}\b/.test(prompt); // Contains stock ticker
-  },
+  context: null as LlamaContext | null,
+  isInitialized: false,
 
   /**
-   * Generate financial analysis response using RAG
+   * Initialize the Llama Engine
    */
-  async generateFinancialResponse(prompt: string): Promise<string> {
+  async init(): Promise<boolean> {
+    if (this.isInitialized) return true;
+
     try {
-      // Initialize database if not already done
-      await databaseService.initialize();
+      console.log(`Checking for model at: ${MODEL_PATH}`);
+      const exists = await RNFS.exists(MODEL_PATH);
+      if (!exists) {
+        console.log(`Model missing at: ${MODEL_PATH}`);
+        return false;
+      }
 
-      // Extract relevant financial context from SQLite
-      const context = await ragService.extractRelevantContext(prompt);
-      
-      // For now, return structured analysis (in future, this will go to Phi-3-mini)
-      const now = format(new Date(), 'dd MMMM yyyy, HH:mm');
-      
-      return `📊 **Financial Analyst AI**\n📅 ${now}\n\n${context}\n\n---\n💡 *This analysis is based on cached market data from Alpha Vantage API. For real-time data, search for companies when online.*`;
+      console.log('Loading Local LLM...');
+      this.context = await initLlama({
+        model: MODEL_PATH,
+        n_ctx: 2048,
+        n_threads: 4,     // Optimized for S10+
+        n_gpu_layers: 99, // Try to offload all layers to GPU
+      });
+
+      this.isInitialized = true;
+      console.log('AI Initialized');
+      return true;
     } catch (error) {
-      console.error('Error generating financial response:', error);
-      return `I encountered an error accessing the financial database. Please make sure you've searched for companies first to build the knowledge base.\n\nError: ${error}`;
+      console.error('AI Init Failed:', error);
+      return false;
     }
   },
 
   /**
-   * Generate personal finance response (budgets, transactions)
+   * Main function: Generate response using RAG + Local LLM
+   * We ignore the 'context' argument since we don't use Personal Finance data anymore.
    */
-  async generatePersonalFinanceResponse(prompt: string, context: AiContext): Promise<string> {
-    const summary = summarizeTransactions(context.transactions);
-    const narrative = buildBudgetNarrative(context.budgets);
-    const insight = pickInsight(context.insights);
-    const now = format(new Date(), 'dd MMMM yyyy, HH:mm');
+  async generateResponse(userPrompt: string, _unusedContext?: any): Promise<string> {
+    try {
+      // 1. Ensure DB and AI are ready
+      await databaseService.initialize();
+      
+      if (!this.isInitialized) {
+        const success = await this.init();
+        if (!success) return "Brain Missing: Please ask the developer to push the .gguf file via ADB.";
+      }
 
-    const suggestion =
-      summary.balance > 0
-        ? 'Poți direcționa surplusul către contul de economii sau investiții automate.'
-        : 'Îți recomand să identifici cheltuielile discreționare ce pot fi amânate.';
+      if (!this.context) throw new Error("AI Context lost");
 
-    const syntheticAnswer = [
-      `📅 ${now}`,
-      `Am analizat întrebarea ta: "${prompt.trim()}"`,
-      '',
-      `• **Venituri**: ${clamp(summary.income)} RON`,
-      `• **Cheltuieli**: ${clamp(summary.expense)} RON`,
-      `• **Sold net**: ${clamp(summary.balance)} RON`,
-      summary.biggestSpender
-        ? `Cea mai mare cheltuială a fost la categoria ${summary.biggestSpender} (${summary.biggestAmount} RON).`
-        : 'Nu există cheltuieli înregistrate.',
-      narrative,
-      insight ? `Insight relevant: ${insight.title} — ${insight.description}` : '',
-      suggestion,
-    ]
-      .filter(Boolean)
-      .join('\n');
+      // 2. Get RAG Context (Stock Data from SQLite/API)
+      // ragService handles fetching fresh data automatically
+      const fullPrompt = await ragService.formatPromptForLLM(userPrompt);
+      
+      // 3. Generate Answer using Llama-3.2
+      const result = await this.context.completion({
+        prompt: fullPrompt,
+        n_predict: 400,
+        stop: ['<|eot_id|>'], // Llama 3 stop token
+        temperature: 0.7,
+      });
 
-    return syntheticAnswer;
+      return result.text.trim();
+
+    } catch (error) {
+      console.error('Error generating response:', error);
+      return `I encountered an error accessing the financial database or the AI model.\n\nError: ${error}`;
+    }
   },
 
   /**
-   * Main entry point - routes to appropriate handler
+   * Release memory when leaving the screen
    */
-  async generateResponse(prompt: string, context: AiContext): Promise<string> {
-    // Check if this is a financial analysis query
-    if (this.isFinancialQuery(prompt)) {
-      return await this.generateFinancialResponse(prompt);
+  async release() {
+    if (this.context) {
+      await this.context.release();
+      this.isInitialized = false;
+      console.log('AI Released');
     }
-
-    // Otherwise, handle as personal finance query
-    return await this.generatePersonalFinanceResponse(prompt, context);
-  },
+  }
 };
