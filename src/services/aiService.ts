@@ -13,6 +13,9 @@ export const AiService = {
 
   /**
    * Initialize the Llama Engine
+   * Optimization for Galaxy S10+:
+   * - Uses CPU (n_gpu_layers: 0) for maximum stability.
+   * - Uses 4 threads to balance speed and battery.
    */
   async init(): Promise<boolean> {
     if (this.isInitialized) return true;
@@ -28,9 +31,9 @@ export const AiService = {
       console.log('Loading Local LLM...');
       this.context = await initLlama({
         model: MODEL_PATH,
-        n_ctx: 2048,
-        n_threads: 4,     // Optimized for S10+
-        n_gpu_layers: 99, // Try to offload all layers to GPU
+        n_ctx: 2048,   
+        n_threads: 4,     
+        n_gpu_layers: 0,  
       });
 
       this.isInitialized = true;
@@ -44,7 +47,6 @@ export const AiService = {
 
   /**
    * Main function: Generate response using RAG + Local LLM
-   * We ignore the 'context' argument since we don't use Personal Finance data anymore.
    */
   async generateResponse(userPrompt: string, _unusedContext?: any): Promise<string> {
     try {
@@ -59,15 +61,25 @@ export const AiService = {
       if (!this.context) throw new Error("AI Context lost");
 
       // 2. Get RAG Context (Stock Data from SQLite/API)
-      // ragService handles fetching fresh data automatically
       const fullPrompt = await ragService.formatPromptForLLM(userPrompt);
       
       // 3. Generate Answer using Llama-3.2
+      // CONFIGURATION FOR "SMART & PRECISE" OUTPUT
       const result = await this.context.completion({
         prompt: fullPrompt,
-        n_predict: 400,
-        stop: ['<|eot_id|>'], // Llama 3 stop token
-        temperature: 0.7,
+        
+        // Output Length: Increased to allow full analysis
+        n_predict: 800, 
+        
+        // Strictness: Low temp = Analytical, High temp = Creative/Hallucinating
+        temperature: 0.2, 
+        
+        // Sampling: Focus on high-probability logic
+        top_k: 40,
+        top_p: 0.95,
+        
+        // Stop Tokens: Ensure it stops exactly when finished
+        stop: ['<|eot_id|>', '<|end_of_text|>'], 
       });
 
       return result.text.trim();

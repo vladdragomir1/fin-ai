@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, StyleSheet, FlatList, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, Text } from 'react-native';
-import { Bot, Sparkles, Send, AlertCircle } from 'lucide-react-native';
-import { ScreenShell, SurfaceCard } from '@/components';
-import { palette, spacing, layout } from '@/theme';
+import { Bot, Sparkles, Send } from 'lucide-react-native';
+import Markdown from 'react-native-markdown-display'; 
+
+import { ScreenShell } from '@/components';
+import { palette, spacing } from '@/theme';
 import { AiService } from '@/services/aiService';
 
 interface Message {
@@ -26,14 +28,12 @@ export const AIChatScreen = () => {
       setModelStatus(success ? 'READY' : 'MISSING');
       
       if (success) {
-        // Add a welcoming message only if we haven't already
         setMessages([{ 
           id: 'welcome', 
-          text: 'Hello! I am your local financial analyst. I have read your database. Ask me about any company in your watchlist.', 
+          text: 'Hello! I am your local financial analyst. Ask me about any stocks & ETFs.', 
           sender: 'ai' 
         }]);
       } else {
-        // Developer Help Message
         setMessages([{ 
           id: 'error', 
           text: 'Brain Missing! \n\nDeveloper: Connect USB and run:\n"adb push D:\\app\\llama-3.2-1b-instruct-q4_k_m.gguf /sdcard/Android/data/com.financeai.app/files/"', 
@@ -43,8 +43,6 @@ export const AIChatScreen = () => {
     };
 
     initAI();
-
-    // Cleanup memory when leaving screen
     return () => { AiService.release(); };
   }, []);
 
@@ -55,16 +53,12 @@ export const AIChatScreen = () => {
     const userText = inputText.trim();
     const userMsg: Message = { id: Date.now().toString(), text: userText, sender: 'user' };
     
-    // UI Updates
     setMessages(prev => [...prev, userMsg]);
     setInputText('');
     setIsTyping(true);
 
     try {
-      // 2. The Heavy Lifting: RAG + LLM Generation
-      // We pass empty context object because AiService handles the RAG lookup internally now
       const responseText = await AiService.generateResponse(userText, { transactions: [], budgets: [], insights: [] });
-      
       const aiMsg: Message = { id: (Date.now() + 1).toString(), text: responseText, sender: 'ai' };
       setMessages(prev => [...prev, aiMsg]);
     } catch (error) {
@@ -87,16 +81,20 @@ export const AIChatScreen = () => {
             <Bot size={16} color="#4F8EF7" />
           </View>
         )}
-        {/* CHANGED: Use a single style for text to ensure visibility */}
-        <Text style={styles.msgText}>
-          {item.text}
-        </Text>
+        
+        {/* LOGIC: Use Text for User, Markdown for AI */}
+        {isUser ? (
+          <Text style={styles.msgText}>{item.text}</Text>
+        ) : (
+          <Markdown style={markdownStyles as any}>
+            {item.text}
+          </Markdown>
+        )}
       </View>
     );
   };
 
   return (
-    // Pass scrollable={false} because FlatList handles scrolling
     <ScreenShell scrollable={false}>
       <View style={styles.header}>
         <View>
@@ -107,7 +105,6 @@ export const AIChatScreen = () => {
           <Text style={styles.subtitle}>Powered by Llama-3.2</Text>
         </View>
         
-        {/* Status Badge */}
         <View style={[styles.badge, 
           modelStatus === 'READY' ? styles.badgeReady : 
           modelStatus === 'MISSING' ? styles.badgeError : styles.badgeLoading
@@ -174,6 +171,57 @@ export const AIChatScreen = () => {
   );
 };
 
+// --- STYLES FOR MARKDOWN (AI Output) ---
+const markdownStyles = {
+  // The main text color
+  body: { 
+    color: '#FFFFFF', 
+    fontSize: 16, 
+    lineHeight: 22 
+  },
+  // Headings (e.g. ### Overview)
+  heading3: { 
+    color: '#4da6ff', // Light Blue
+    fontSize: 18, 
+    fontWeight: 'bold', 
+    marginTop: 10, 
+    marginBottom: 5 
+  },
+  // Bold text (**text**)
+  strong: { 
+    fontWeight: 'bold',
+    color: '#E1E1E1' 
+  },
+  // Lists
+  bullet_list: { marginVertical: 5 },
+  // Tables
+  table: { 
+    borderWidth: 1, 
+    borderColor: '#444', 
+    borderRadius: 8, 
+    marginTop: 8,
+    marginBottom: 8
+  },
+  tr: { 
+    borderBottomWidth: 1, 
+    borderColor: '#444', 
+    flexDirection: 'row', 
+    alignItems: 'center'
+  },
+  th: { 
+    backgroundColor: '#333', 
+    padding: 8, 
+    color: '#FFF', 
+    fontWeight: 'bold',
+  },
+  td: { 
+    padding: 8, 
+    color: '#DDD',
+    minWidth: 80 
+  }
+};
+
+// --- STYLES FOR SCREEN ---
 const styles = StyleSheet.create({
   header: {
     paddingHorizontal: spacing.lg,
@@ -198,13 +246,11 @@ const styles = StyleSheet.create({
     color: palette.mutedText,
     fontSize: 14,
   },
-  // Badges
   badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   badgeReady: { backgroundColor: 'rgba(76, 175, 80, 0.2)' },
   badgeError: { backgroundColor: 'rgba(255, 82, 82, 0.2)' },
   badgeLoading: { backgroundColor: 'rgba(255, 193, 7, 0.2)' },
   badgeText: { fontSize: 10, fontWeight: 'bold', color: palette.text },
-
   chatContainer: {
     flex: 1,
     justifyContent: 'space-between',
@@ -214,8 +260,6 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.lg,
     flexGrow: 1,
   },
-  
-  // Messages
   msgBubble: {
     maxWidth: '85%',
     padding: 12,
@@ -224,25 +268,22 @@ const styles = StyleSheet.create({
   },
   userBubble: {
     alignSelf: 'flex-end',
-    backgroundColor: '#007AFF', // Standard Blue (High contrast)
+    backgroundColor: '#007AFF',
     borderBottomRightRadius: 4,
   },
   aiBubble: {
     alignSelf: 'flex-start',
-    backgroundColor: '#2C2C2E', // Dark Gray (High contrast)
+    backgroundColor: '#2C2C2E',
     borderBottomLeftRadius: 4,
     borderWidth: 1,
     borderColor: '#3F3F46',
   },
-  // NEW STYLE: Forces text to be white
   msgText: {
     color: '#FFFFFF', 
     fontSize: 16,
     lineHeight: 22,
   },
   botIconSmall: { marginBottom: 6 },
-
-  // Empty State
   emptyState: {
     flex: 1,
     justifyContent: 'center',
@@ -273,8 +314,6 @@ const styles = StyleSheet.create({
     maxWidth: 260,
     lineHeight: 22,
   },
-
-  // Input
   typingIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
