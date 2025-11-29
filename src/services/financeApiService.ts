@@ -1,8 +1,14 @@
-import type { Company, CompanyOverview, StockQuote, FinancialMetrics } from '@/types';
+import type {
+  Company,
+  CompanyOverview,
+  StockQuote,
+  FinancialMetrics,
+} from '@/types';
+
 import { databaseService } from './databaseService';
 import { offlineDataService } from './offlineDataService';
 
-import { ALPHA_VANTAGE_KEY, ALPHA_VANTAGE_URL } from '@env';
+import { FINANCIAL_API_KEY, FINANCIAL_API_URL } from '@env';
 
 class FinanceApiService {
   private initialized = false;
@@ -13,6 +19,7 @@ class FinanceApiService {
       this.initialized = true;
     }
   }
+
   // Căutare companii după simbol sau nume
   async searchCompanies(query: string): Promise<Company[]> {
     await this.ensureInitialized();
@@ -20,10 +27,14 @@ class FinanceApiService {
     try {
       // Check SQLite cache first (with AsyncStorage fallback)
       let cached: Company[] | null = null;
+
       try {
         cached = await databaseService.getSearchCache(query);
       } catch (dbErr) {
-        console.warn('SQLite search cache read failed, falling back to AsyncStorage', dbErr);
+        console.warn(
+          'SQLite search cache read failed, falling back to AsyncStorage',
+          dbErr,
+        );
       }
 
       if (cached) {
@@ -42,15 +53,24 @@ class FinanceApiService {
         console.warn('AsyncStorage search read failed', asErr);
       }
 
-      const url = `${ALPHA_VANTAGE_URL}?function=SYMBOL_SEARCH&keywords=${encodeURIComponent(query)}&apikey=${ALPHA_VANTAGE_KEY}`;
+      const url = `${FINANCIAL_API_URL}?function=SYMBOL_SEARCH&keywords=${encodeURIComponent(
+        query,
+      )}&apikey=${FINANCIAL_API_KEY}`;
+
       console.log('🔍 Searching Alpha Vantage API');
 
       // Helper to detect fetch aborts
       const isAbortError = (err: any) => {
-        return err && (err.name === 'AbortError' || (typeof err.message === 'string' && err.message.includes('Aborted')));
+        return (
+          err &&
+          (err.name === 'AbortError' ||
+            (typeof err.message === 'string' &&
+              err.message.includes('Aborted')))
+        );
       };
 
-      const sleep = (ms: number) => new Promise((resolve) => setTimeout(() => resolve(null), ms));
+      const sleep = (ms: number) =>
+        new Promise((resolve) => setTimeout(() => resolve(null), ms));
 
       // Attempt fetch with a small retry/backoff for transient network failures
       const maxRetries = 2;
@@ -60,6 +80,7 @@ class FinanceApiService {
 
       while (attempt <= maxRetries) {
         attempt += 1;
+
         const controller = new AbortController();
         const timeoutMs = 7000; // slightly larger timeout
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -78,7 +99,10 @@ class FinanceApiService {
 
           // If API returns rate-limit note or error message, do not retry
           if (data['Note'] || data['Error Message']) {
-            console.warn('❌ Alpha Vantage Error:', data['Error Message'] || data['Note']);
+            console.warn(
+              '❌ Alpha Vantage Error:',
+              data['Error Message'] || data['Note'],
+            );
             // ensure we don't attempt further retries
             lastError = data['Note'] || data['Error Message'];
             break;
@@ -92,7 +116,10 @@ class FinanceApiService {
 
           // If abort (timeout) — bail out and use cache if available
           if (isAbortError(err)) {
-            console.warn('⏱️ Search aborted (timeout). Will use cached results if available.', err);
+            console.warn(
+              '⏱️ Search aborted (timeout). Will use cached results if available.',
+              err,
+            );
             break;
           }
 
@@ -104,7 +131,11 @@ class FinanceApiService {
 
           // Backoff then retry
           const backoff = 500 * Math.pow(2, attempt - 1);
-          console.warn(`Fetch attempt ${attempt} failed, retrying in ${backoff}ms...`, err);
+          console.warn(
+            `Fetch attempt ${attempt} failed, retrying in ${backoff}ms...`,
+            err,
+          );
+
           // small sleep before retry
           // eslint-disable-next-line no-await-in-loop
           await sleep(backoff);
@@ -114,18 +145,28 @@ class FinanceApiService {
 
       // If we didn't get valid data from API, try to use cached results
       if (!data) {
-        if (lastError && (typeof lastError === 'object') && (lastError['Note'] || lastError['Error Message'])) {
+        if (
+          lastError &&
+          typeof lastError === 'object' &&
+          (lastError['Note'] || lastError['Error Message'])
+        ) {
           // Rate limit response which we already logged — prefer cached
         }
 
         // if we have cached (SQLite) return it
         if (cached) return cached;
+
         // try AsyncStorage cached search results
         try {
-          const asCached = await offlineDataService.getCachedSearchResults(query);
+          const asCached = await offlineDataService.getCachedSearchResults(
+            query,
+          );
           if (asCached && asCached.length > 0) return asCached;
         } catch (asErr) {
-          console.warn('AsyncStorage search read failed during API fallback', asErr);
+          console.warn(
+            'AsyncStorage search read failed during API fallback',
+            asErr,
+          );
         }
 
         // nothing left — return empty
@@ -133,7 +174,11 @@ class FinanceApiService {
       }
 
       // Parse results
-      if (data.bestMatches && Array.isArray(data.bestMatches) && data.bestMatches.length > 0) {
+      if (
+        data.bestMatches &&
+        Array.isArray(data.bestMatches) &&
+        data.bestMatches.length > 0
+      ) {
         const companies = data.bestMatches.map((item: any) => ({
           symbol: item['1. symbol'],
           name: item['2. name'],
@@ -141,40 +186,53 @@ class FinanceApiService {
           currency: item['8. currency'] || 'USD',
           country: item['4. region'] || 'USA',
         }));
-        
+
         console.log('✅ Found companies from API:', companies.length);
-        
+
         // Save to SQLite (best-effort) and AsyncStorage as fallback
         try {
           await databaseService.saveSearchCache(query, companies);
         } catch (saveErr) {
-          console.warn('Saving search cache to SQLite failed, caching to AsyncStorage instead', saveErr);
+          console.warn(
+            'Saving search cache to SQLite failed, caching to AsyncStorage instead',
+            saveErr,
+          );
           try {
-            await offlineDataService.cacheSearchResults(query, companies as any[]);
+            await offlineDataService.cacheSearchResults(
+              query,
+              companies as any[],
+            );
           } catch (asErr) {
             console.warn('Caching search results to AsyncStorage failed', asErr);
           }
         }
-        
+
         return companies;
       }
 
       return cached || [];
     } catch (error) {
-    console.warn('❌ Error searching companies:', error);
+      console.warn('❌ Error searching companies:', error);
+
       // Try SQLite first, then AsyncStorage
       try {
         const cached = await databaseService.getSearchCache(query);
         if (cached) return cached;
       } catch (dbErr) {
-        console.warn('SQLite search cache read failed in error handler', dbErr);
+        console.warn(
+          'SQLite search cache read failed in error handler',
+          dbErr,
+        );
       }
 
       try {
         const asCached = await offlineDataService.getCachedSearchResults(query);
         if (asCached) return asCached;
       } catch (asErr) {
-        console.warn('AsyncStorage search read failed in error handler', asErr);
+        console.warn(
+          'AsyncStorage search read failed in error handler',
+          asErr,
+        );
       }
 
       return [];
@@ -188,6 +246,7 @@ class FinanceApiService {
     try {
       // Check SQLite cache first (fresh if < 24h)
       let cached: StockQuote | null = null;
+
       try {
         cached = await databaseService.getStockQuote(symbol);
       } catch (dbErr) {
@@ -210,38 +269,48 @@ class FinanceApiService {
         console.warn('AsyncStorage quote read failed', asErr);
       }
 
-      const url = `${ALPHA_VANTAGE_URL}?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
+      const url = `${FINANCIAL_API_URL}?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${FINANCIAL_API_KEY}`;
       console.log('📊 Fetching quote from API');
-      
+
       const response = await fetch(url);
       const data = await response.json();
 
       if (data['Note']) {
         console.warn('⚠️ Rate limit - checking old cache');
+
         try {
           const oldCached = await databaseService.getStockQuote(symbol, Infinity);
           if (oldCached) return oldCached;
         } catch (dbErr) {
-          console.warn('SQLite old-quote read failed during rate limit handling', dbErr);
+          console.warn(
+            'SQLite old-quote read failed during rate limit handling',
+            dbErr,
+          );
         }
 
         try {
           const asOld = await offlineDataService.getCachedQuote(symbol);
           if (asOld) return asOld;
         } catch (asErr) {
-          console.warn('AsyncStorage old-quote read failed during rate limit handling', asErr);
+          console.warn(
+            'AsyncStorage old-quote read failed during rate limit handling',
+            asErr,
+          );
         }
 
         return this.getMockStockQuote(symbol);
       }
 
       const quote = data['Global Quote'];
+
       if (quote && quote['05. price']) {
         const stockQuote: StockQuote = {
           symbol: quote['01. symbol'],
           price: parseFloat(quote['05. price']),
           change: parseFloat(quote['09. change']),
-          changePercent: parseFloat(quote['10. change percent'].replace('%', '')),
+          changePercent: parseFloat(
+            quote['10. change percent'].replace('%', ''),
+          ),
           volume: parseInt(quote['06. volume']),
           high: parseFloat(quote['03. high']),
           low: parseFloat(quote['04. low']),
@@ -255,7 +324,10 @@ class FinanceApiService {
           await databaseService.saveStockQuote(stockQuote);
           console.log('✅ Quote saved to SQLite');
         } catch (saveErr) {
-          console.warn('Saving quote to SQLite failed, caching to AsyncStorage', saveErr);
+          console.warn(
+            'Saving quote to SQLite failed, caching to AsyncStorage',
+            saveErr,
+          );
           try {
             await offlineDataService.cacheQuote(symbol, stockQuote as any);
           } catch (asErr) {
@@ -269,6 +341,7 @@ class FinanceApiService {
       return null;
     } catch (error) {
       console.warn('Error fetching stock quote:', error);
+
       try {
         const oldCached = await databaseService.getStockQuote(symbol, Infinity);
         if (oldCached) return oldCached;
@@ -299,9 +372,9 @@ class FinanceApiService {
         return cached;
       }
 
-      const url = `${ALPHA_VANTAGE_URL}?function=OVERVIEW&symbol=${symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
+      const url = `${FINANCIAL_API_URL}?function=OVERVIEW&symbol=${symbol}&apikey=${FINANCIAL_API_KEY}`;
       console.log('📋 Fetching overview from API');
-      
+
       const response = await fetch(url);
       const data = await response.json();
 
@@ -319,7 +392,9 @@ class FinanceApiService {
         description: data.Description,
         sector: data.Sector,
         industry: data.Industry,
-        employees: data.FullTimeEmployees ? parseInt(data.FullTimeEmployees) : undefined,
+        employees: data.FullTimeEmployees
+          ? parseInt(data.FullTimeEmployees)
+          : undefined,
         website: data.OfficialSite,
       };
 
@@ -346,9 +421,9 @@ class FinanceApiService {
         return cached;
       }
 
-      const url = `${ALPHA_VANTAGE_URL}?function=OVERVIEW&symbol=${symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
+      const url = `${FINANCIAL_API_URL}?function=OVERVIEW&symbol=${symbol}&apikey=${FINANCIAL_API_KEY}`;
       console.log('📈 Fetching metrics from API');
-      
+
       const response = await fetch(url);
       const data = await response.json();
 
@@ -361,10 +436,18 @@ class FinanceApiService {
         symbol: data.Symbol,
         peRatio: data.PERatio ? parseFloat(data.PERatio) : undefined,
         eps: data.EPS ? parseFloat(data.EPS) : undefined,
-        marketCap: data.MarketCapitalization ? parseFloat(data.MarketCapitalization) : undefined,
-        dividendYield: data.DividendYield ? parseFloat(data.DividendYield) * 100 : undefined,
-        weekHigh52: data['52WeekHigh'] ? parseFloat(data['52WeekHigh']) : undefined,
-        weekLow52: data['52WeekLow'] ? parseFloat(data['52WeekLow']) : undefined,
+        marketCap: data.MarketCapitalization
+          ? parseFloat(data.MarketCapitalization)
+          : undefined,
+        dividendYield: data.DividendYield
+          ? parseFloat(data.DividendYield) * 100
+          : undefined,
+        weekHigh52: data['52WeekHigh']
+          ? parseFloat(data['52WeekHigh'])
+          : undefined,
+        weekLow52: data['52WeekLow']
+          ? parseFloat(data['52WeekLow'])
+          : undefined,
         beta: data.Beta ? parseFloat(data.Beta) : undefined,
         averageVolume: data['50DayMovingAverage'] ? undefined : undefined,
       };
@@ -380,8 +463,6 @@ class FinanceApiService {
     }
   }
 
-
-
   // Obține date istorice pentru chart
   async getHistoricalData(symbol: string, range: string = '1Y'): Promise<any[]> {
     await this.ensureInitialized();
@@ -389,10 +470,14 @@ class FinanceApiService {
     try {
       // Check SQLite cache first (with AsyncStorage fallback)
       let cached: any[] | null = null;
+
       try {
         cached = await databaseService.getHistoricalData(symbol, range);
       } catch (dbErr) {
-        console.warn('SQLite historical read failed, falling back to AsyncStorage', dbErr);
+        console.warn(
+          'SQLite historical read failed, falling back to AsyncStorage',
+          dbErr,
+        );
       }
 
       if (cached) {
@@ -401,7 +486,10 @@ class FinanceApiService {
       }
 
       try {
-        const asCached = await offlineDataService.getCachedChartData(symbol, range);
+        const asCached = await offlineDataService.getCachedChartData(
+          symbol,
+          range,
+        );
         if (asCached) {
           console.log('✅ Using cached historical data from AsyncStorage');
           return asCached;
@@ -410,78 +498,113 @@ class FinanceApiService {
         console.warn('AsyncStorage historical read failed', asErr);
       }
 
-      const url = `${ALPHA_VANTAGE_URL}?function=TIME_SERIES_DAILY&symbol=${symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
+      const url = `${FINANCIAL_API_URL}?function=TIME_SERIES_DAILY&symbol=${symbol}&apikey=${FINANCIAL_API_KEY}`;
       console.log('📈 Fetching historical data from API');
-      
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
+
       const response = await fetch(url, { signal: controller.signal });
       clearTimeout(timeoutId);
-      
+
       const data = await response.json();
-      
+
       if (data['Note'] || data['Error Message']) {
         console.log('⚠️ Rate limit - checking old cache');
+
         try {
-          const oldCached = await databaseService.getHistoricalData(symbol, range, Infinity);
+          const oldCached = await databaseService.getHistoricalData(
+            symbol,
+            range,
+            Infinity,
+          );
           if (oldCached) return oldCached;
         } catch (dbErr) {
-          console.warn('SQLite historical old-cache read failed during rate limit handling', dbErr);
+          console.warn(
+            'SQLite historical old-cache read failed during rate limit handling',
+            dbErr,
+          );
         }
 
         try {
-          const asOld = await offlineDataService.getCachedChartData(symbol, range);
+          const asOld = await offlineDataService.getCachedChartData(
+            symbol,
+            range,
+          );
           if (asOld) return asOld;
         } catch (asErr) {
-          console.warn('AsyncStorage historical old-cache read failed during rate limit handling', asErr);
+          console.warn(
+            'AsyncStorage historical old-cache read failed during rate limit handling',
+            asErr,
+          );
         }
 
         return this.getMockChartData(symbol, range);
       }
-      
+
       const timeSeries = data['Time Series (Daily)'];
+
       if (timeSeries) {
-        let chartData = Object.entries(timeSeries).map(([date, values]: [string, any]) => ({
-          date,
-          price: parseFloat(values['4. close']),
-          timestamp: new Date(date).getTime(),
-        }));
-        
+        let chartData = Object.entries(timeSeries).map(
+          ([date, values]: [string, any]) => ({
+            date,
+            price: parseFloat(values['4. close']),
+            timestamp: new Date(date).getTime(),
+          }),
+        );
+
         chartData = chartData.sort((a, b) => a.timestamp - b.timestamp);
-        
+
         // Filter by range
         const now = Date.now();
         let cutoffDate = now;
+
         if (range === '1M') cutoffDate = now - 30 * 24 * 60 * 60 * 1000;
         else if (range === '6M') cutoffDate = now - 180 * 24 * 60 * 60 * 1000;
         else if (range === '1Y') cutoffDate = now - 365 * 24 * 60 * 60 * 1000;
-        else if (range === '5Y') cutoffDate = now - 5 * 365 * 24 * 60 * 60 * 1000;
-        
+        else if (range === '5Y')
+          cutoffDate = now - 5 * 365 * 24 * 60 * 60 * 1000;
+
         if (range !== 'ALL') {
-          chartData = chartData.filter(d => d.timestamp >= cutoffDate);
+          chartData = chartData.filter((d) => d.timestamp >= cutoffDate);
         }
-        
+
         // Save to SQLite and also cache to AsyncStorage as fallback
         try {
           await databaseService.saveHistoricalData(symbol, range, chartData);
-          console.log('✅ Historical data saved to SQLite:', chartData.length, 'points');
+          console.log(
+            '✅ Historical data saved to SQLite:',
+            chartData.length,
+            'points',
+          );
         } catch (saveErr) {
-          console.warn('Saving historical data to SQLite failed, caching to AsyncStorage', saveErr);
+          console.warn(
+            'Saving historical data to SQLite failed, caching to AsyncStorage',
+            saveErr,
+          );
           try {
             await offlineDataService.cacheChartData(symbol, range, chartData);
           } catch (asErr) {
-            console.warn('Caching historical data to AsyncStorage failed', asErr);
+            console.warn(
+              'Caching historical data to AsyncStorage failed',
+              asErr,
+            );
           }
         }
-        
+
         return chartData;
       }
-      
-      return await databaseService.getHistoricalData(symbol, range, Infinity) || this.getMockChartData(symbol, range);
+
+      return (
+        (await databaseService.getHistoricalData(symbol, range, Infinity)) ||
+        this.getMockChartData(symbol, range)
+      );
     } catch (error) {
       console.warn('❌ Error fetching historical data:', error);
-      return await databaseService.getHistoricalData(symbol, range, Infinity) || this.getMockChartData(symbol, range);
+      return (
+        (await databaseService.getHistoricalData(symbol, range, Infinity)) ||
+        this.getMockChartData(symbol, range)
+      );
     }
   }
 
@@ -490,53 +613,53 @@ class FinanceApiService {
     const basePrice = this.getMockStockQuote(symbol).price;
     const dataPoints: any[] = [];
     const now = Date.now();
-    
+
     // Determină numărul de zile bazat pe range
     let days = 365;
     if (range === '1M') days = 30;
     else if (range === '6M') days = 180;
     else if (range === '5Y') days = 1825;
     else if (range === 'ALL') days = 3650;
-    
+
     // Generează date mock cu variație realistă
     for (let i = days; i >= 0; i--) {
       const date = new Date(now - i * 24 * 60 * 60 * 1000);
       const variation = (Math.random() - 0.5) * 0.1; // ±5% variație
-      const trend = (days - i) / days * 0.2; // Trend ascendent de 20%
+      const trend = ((days - i) / days) * 0.2; // Trend ascendent de 20%
       const price = basePrice * (0.9 + trend + variation);
-      
+
       dataPoints.push({
         date: date.toISOString().split('T')[0],
         price: parseFloat(price.toFixed(2)),
         timestamp: date.getTime(),
       });
     }
-    
+
     return dataPoints;
   }
 
   getMockStockQuote(symbol: string): StockQuote {
     // Real market prices matching TradingView charts (as of November 2025)
     const mockPrices: Record<string, number> = {
-      AAPL: 178.50,   // Apple Inc.
-      GOOGL: 142.30,  // Alphabet Inc.
-      MSFT: 415.20,   // Microsoft
-      AMZN: 175.80,   // Amazon
-      TSLA: 242.15,   // Tesla
-      NVDA: 186.60,   // NVIDIA
-      GE: 300.13,     // General Electric
-      META: 485.20,   // Meta Platforms
-      NFLX: 625.50,   // Netflix
-      AMD: 145.80,    // Advanced Micro Devices
-      INTC: 48.50,    // Intel
-      CSCO: 56.30,    // Cisco
-      ORCL: 125.40,   // Oracle
-      IBM: 195.20,    // IBM
-      DIS: 95.80,     // Disney
+      AAPL: 178.5, // Apple Inc.
+      GOOGL: 142.3, // Alphabet Inc.
+      MSFT: 415.2, // Microsoft
+      AMZN: 175.8, // Amazon
+      TSLA: 242.15, // Tesla
+      NVDA: 186.6, // NVIDIA
+      GE: 300.13, // General Electric
+      META: 485.2, // Meta Platforms
+      NFLX: 625.5, // Netflix
+      AMD: 145.8, // Advanced Micro Devices
+      INTC: 48.5, // Intel
+      CSCO: 56.3, // Cisco
+      ORCL: 125.4, // Oracle
+      IBM: 195.2, // IBM
+      DIS: 95.8, // Disney
     };
 
     const price = mockPrices[symbol] || 100;
-    
+
     // Use deterministic variation based on symbol for consistency
     const seed = symbol.charCodeAt(0) + symbol.charCodeAt(symbol.length - 1);
     const variation = ((seed % 100) / 100 - 0.5) * 0.02; // Deterministic ±1%
@@ -548,7 +671,7 @@ class FinanceApiService {
       price: parseFloat(price.toFixed(2)),
       change: parseFloat(change.toFixed(2)),
       changePercent: parseFloat(changePercent.toFixed(2)),
-      volume: Math.floor((seed % 50) * 1000000 + 50000000),
+      volume: Math.floor((seed % 50) * 1_000_000 + 50_000_000),
       high: parseFloat((price + price * 0.015).toFixed(2)),
       low: parseFloat((price - price * 0.015).toFixed(2)),
       open: parseFloat((price + change * 0.5).toFixed(2)),

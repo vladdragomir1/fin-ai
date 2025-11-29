@@ -113,7 +113,7 @@ export const CompanySearchScreen = () => {
             </View>
             <FlatList
               data={results}
-              keyExtractor={(item) => item.symbol}
+              keyExtractor={(item, index) => `${item.symbol}-${index}`}
               contentContainerStyle={styles.listContent}
               showsVerticalScrollIndicator={false}
               renderItem={({ item }) => {

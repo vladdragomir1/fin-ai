@@ -1,4 +1,4 @@
 declare module '@env' {
-  export const ALPHA_VANTAGE_KEY: string;
-  export const ALPHA_VANTAGE_URL: string;
+  export const FINANCIAL_API_KEY: string;
+  export const FINANCIAL_API_URL: string;
 }
