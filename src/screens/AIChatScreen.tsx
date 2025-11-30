@@ -1,145 +1,262 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, FlatList, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, Text } from 'react-native';
-import { Bot, Sparkles, Send } from 'lucide-react-native';
+import { 
+  View, 
+  StyleSheet, 
+  FlatList, 
+  TextInput, 
+  TouchableOpacity, 
+  ActivityIndicator, 
+  KeyboardAvoidingView, 
+  Platform, 
+  Text, 
+  Modal
+} from 'react-native';
+import { Bot, Sparkles, Send, Menu, Plus, MessageSquare, X, Trash2 } from 'lucide-react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Markdown from 'react-native-markdown-display'; 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { ScreenShell } from '@/components';
 import { palette, spacing } from '@/theme';
 import { AiService } from '@/services/aiService';
 
+// --- Types ---
 interface Message {
   id: string;
   text: string;
   sender: 'user' | 'ai';
+  timestamp: number;
 }
 
+interface ChatSession {
+  id: string;
+  title: string;
+  lastModified: number;
+  messages: Message[];
+}
+
+const STORAGE_KEY = '@finai_chats';
+
 export const AIChatScreen = () => {
+  // State
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [modelStatus, setModelStatus] = useState<'LOADING' | 'READY' | 'MISSING'>('LOADING');
+  const [isSidebarVisible, setSidebarVisible] = useState(false);
+  
   const flatListRef = useRef<FlatList>(null);
+  
+  // Ref to track active session ID inside async functions (Fixes the switching bug)
+  const activeSessionRef = useRef<string | null>(null);
 
-  // 1. Initialize AI on Mount
+  // 1. Initialize AI & Load History
   useEffect(() => {
-    const initAI = async () => {
+    const init = async () => {
+      await loadSessions();
       console.log("Initializing AI...");
       const success = await AiService.init();
       setModelStatus(success ? 'READY' : 'MISSING');
-      
-      if (success) {
-        setMessages([{ 
-          id: 'welcome', 
-          text: 'Hello! I am your local financial analyst. Ask me about any stocks & ETFs.', 
-          sender: 'ai' 
-        }]);
-      } else {
-        setMessages([{ 
-          id: 'error', 
-          text: 'Brain Missing! \n\nDeveloper: Connect USB and run:\n"adb push D:\\app\\llama-3.2-1b-instruct-q4_k_m.gguf /sdcard/Android/data/com.financeai.app/files/"', 
-          sender: 'ai' 
-        }]);
-      }
     };
-
-    initAI();
+    init();
     return () => { AiService.release(); };
   }, []);
 
+  // Sync Ref with State
+  useEffect(() => {
+    activeSessionRef.current = currentSessionId;
+  }, [currentSessionId]);
+
+  // 2. Load Sessions from Storage
+  const loadSessions = async () => {
+    try {
+      const json = await AsyncStorage.getItem(STORAGE_KEY);
+      if (json) {
+        const parsed = JSON.parse(json);
+        parsed.sort((a: ChatSession, b: ChatSession) => b.lastModified - a.lastModified);
+        setSessions(parsed);
+        if (parsed.length > 0) loadSession(parsed[0]);
+        else startNewChat();
+      } else {
+        startNewChat();
+      }
+    } catch (e) {
+      console.error("Failed to load chats", e);
+    }
+  };
+
+  const saveSessionsToStorage = async (updatedSessions: ChatSession[]) => {
+    try {
+      setSessions(updatedSessions);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updatedSessions));
+    } catch (e) { console.error(e); }
+  };
+
+  // 4. Session Logic
+  const startNewChat = () => {
+    setIsTyping(false); // Reset typing state
+    setInputText('');
+    setSidebarVisible(false);
+
+    const newId = Date.now().toString();
+    const welcomeMsg: Message = { 
+      id: 'welcome', 
+      text: 'Hello! I am FinAI. Ask me about market trends, stock analysis, or your portfolio.', 
+      sender: 'ai',
+      timestamp: Date.now()
+    };
+
+    const newSession: ChatSession = {
+      id: newId,
+      title: 'New Chat',
+      lastModified: Date.now(),
+      messages: [welcomeMsg]
+    };
+
+    setCurrentSessionId(newId);
+    setMessages([welcomeMsg]);
+    
+    setSessions(prev => {
+        const updated = [newSession, ...prev];
+        saveSessionsToStorage(updated);
+        return updated;
+    });
+  };
+
+  const loadSession = (session: ChatSession) => {
+    setIsTyping(false); // Reset typing state immediately
+    setInputText('');
+    setSidebarVisible(false);
+    
+    setCurrentSessionId(session.id);
+    setMessages(session.messages);
+  };
+
+  const deleteSession = (id: string) => {
+    const updated = sessions.filter(s => s.id !== id);
+    saveSessionsToStorage(updated);
+    if (currentSessionId === id) {
+      if (updated.length > 0) loadSession(updated[0]);
+      else startNewChat();
+    }
+  };
+
+  // 5. Send Logic (With Concurrency Fix)
   const handleSend = async () => {
-    if (!inputText.trim()) return;
-    if (modelStatus !== 'READY') return;
+    if (!inputText.trim() || modelStatus !== 'READY') return;
+
+    // Capture current ID to prevent race conditions
+    const chatContextId = currentSessionId;
+    if (!chatContextId) return;
 
     const userText = inputText.trim();
-    const userMsg: Message = { id: Date.now().toString(), text: userText, sender: 'user' };
+    const userMsg: Message = { id: Date.now().toString(), text: userText, sender: 'user', timestamp: Date.now() };
     
+    // Optimistic UI Update
     setMessages(prev => [...prev, userMsg]);
     setInputText('');
     setIsTyping(true);
 
+    // Save User Message (Functional Update)
+    setSessions(prev => {
+      const updated = prev.map(s => {
+        if (s.id === chatContextId) {
+            const newTitle = s.title === 'New Chat' ? (userText.slice(0, 25) + '...') : s.title;
+            return { ...s, messages: [...s.messages, userMsg], title: newTitle, lastModified: Date.now() };
+        }
+        return s;
+      });
+      saveSessionsToStorage(updated);
+      return updated;
+    });
+
     try {
-      const responseText = await AiService.generateResponse(userText, { transactions: [], budgets: [], insights: [] });
-      const aiMsg: Message = { id: (Date.now() + 1).toString(), text: responseText, sender: 'ai' };
-      setMessages(prev => [...prev, aiMsg]);
+      const responseText = await AiService.generateResponse(userText, {});
+      const aiMsg: Message = { id: (Date.now() + 1).toString(), text: responseText, sender: 'ai', timestamp: Date.now() };
+      
+      // Only update UI if user is still looking at THIS chat
+      if (activeSessionRef.current === chatContextId) {
+          setMessages(prev => [...prev, aiMsg]);
+          setIsTyping(false);
+      }
+
+      // Save AI Message (Background Safe)
+      setSessions(prev => {
+        const updated = prev.map(s => 
+          s.id === chatContextId 
+            ? { ...s, messages: [...s.messages, aiMsg], lastModified: Date.now() }
+            : s
+        );
+        updated.sort((a, b) => b.lastModified - a.lastModified);
+        saveSessionsToStorage(updated);
+        return updated;
+      });
+
     } catch (error) {
-      console.error(error);
-      setMessages(prev => [...prev, { id: 'err', text: 'I encountered an error thinking.', sender: 'ai' }]);
-    } finally {
-      setIsTyping(false);
+      if (activeSessionRef.current === chatContextId) {
+          setMessages(prev => [...prev, { id: 'err', text: 'Error thinking.', sender: 'ai', timestamp: Date.now() }]);
+          setIsTyping(false);
+      }
     }
   };
 
-  const renderItem = ({ item }: { item: Message }) => {
+  // --- Render Helpers ---
+  const renderMessage = ({ item }: { item: Message }) => {
     const isUser = item.sender === 'user';
     return (
-      <View style={[
-        styles.msgBubble, 
-        isUser ? styles.userBubble : styles.aiBubble
-      ]}>
+      <View style={[styles.msgWrapper, isUser ? styles.userWrapper : styles.aiWrapper]}>
         {!isUser && (
-          <View style={styles.botIconSmall}>
-            <Bot size={16} color="#4F8EF7" />
+          <View style={styles.aiIcon}>
+            <Sparkles size={16} color="#FFF" />
           </View>
         )}
-        
-        {/* LOGIC: Use Text for User, Markdown for AI */}
-        {isUser ? (
-          <Text style={styles.msgText}>{item.text}</Text>
-        ) : (
-          <Markdown style={markdownStyles as any}>
-            {item.text}
-          </Markdown>
-        )}
+        <View style={[styles.msgBubble, isUser ? styles.userBubble : styles.aiBubble]}>
+          {isUser ? (
+            <Text style={styles.msgText}>{item.text}</Text>
+          ) : (
+            <Markdown style={markdownStyles as any}>{item.text}</Markdown>
+          )}
+        </View>
       </View>
     );
   };
 
   return (
     <ScreenShell scrollable={false}>
+      {/* --- HEADER --- */}
       <View style={styles.header}>
-        <View>
-          <View style={styles.titleRow}>
-            <Sparkles size={18} color={palette.accent} />
-            <Text style={styles.title}>FinAI Assistant</Text>
-          </View>
-          <Text style={styles.subtitle}>Powered by Llama-3.2</Text>
-        </View>
+        <TouchableOpacity onPress={() => setSidebarVisible(true)} style={styles.menuBtn}>
+          <Menu size={24} color={palette.text} />
+        </TouchableOpacity>
         
-        <View style={[styles.badge, 
-          modelStatus === 'READY' ? styles.badgeReady : 
-          modelStatus === 'MISSING' ? styles.badgeError : styles.badgeLoading
-        ]}>
-          <Text style={styles.badgeText}>{modelStatus}</Text>
+        <View style={styles.headerTitleContainer}>
+          <Text style={styles.headerTitle}>FinAI</Text>
+          <View style={styles.modelTag}>
+            <Text style={styles.modelTagText}>Llama 3.2</Text>
+          </View>
         </View>
+
+        <View style={[styles.statusDot, { backgroundColor: modelStatus === 'READY' ? palette.success : palette.danger }]} />
       </View>
 
+      {/* --- CHAT AREA --- */}
       <View style={styles.chatContainer}>
         <FlatList
           ref={flatListRef}
           data={messages}
           keyExtractor={item => item.id}
-          renderItem={renderItem}
+          renderItem={renderMessage}
           contentContainerStyle={styles.listContent}
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-          ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <View style={styles.iconCircle}>
-                <Bot size={48} color={palette.text} strokeWidth={1} />
-              </View>
-              <Text style={styles.emptyTitle}>
-                {modelStatus === 'LOADING' ? 'Initializing Brain...' : 'How can I help you today?'}
-              </Text>
-              <Text style={styles.emptyText}>
-                Ask about market trends, company fundamentals, or technical analysis.
-              </Text>
-            </View>
-          }
         />
 
         {isTyping && (
-          <View style={styles.typingIndicator}>
-            <ActivityIndicator size="small" color={palette.primary} />
-            <Text style={styles.typingText}>Analyzing market data...</Text>
+          <View style={styles.typingContainer}>
+            <ActivityIndicator size="small" color={palette.accent} />
+            <Text style={styles.typingText}>Analyst is thinking...</Text>
           </View>
         )}
 
@@ -147,10 +264,10 @@ export const AIChatScreen = () => {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
           keyboardVerticalOffset={100}
         >
-          <View style={styles.inputArea}>
+          <View style={styles.inputContainer}>
             <TextInput
               style={styles.input}
-              placeholder={modelStatus === 'READY' ? "Ask a question..." : "Waiting for model..."}
+              placeholder={modelStatus === 'READY' ? "Ask anything..." : "Downloading brain..."}
               placeholderTextColor={palette.mutedText}
               value={inputText}
               onChangeText={setInputText}
@@ -162,192 +279,179 @@ export const AIChatScreen = () => {
               disabled={modelStatus !== 'READY' || !inputText.trim()}
               style={[styles.sendBtn, { opacity: inputText.trim() ? 1 : 0.5 }]}
             >
-              <Send size={20} color={palette.surface} />
+              <Send size={20} color="#FFF" />
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
       </View>
+
+      {/* --- SIDEBAR --- */}
+      <Modal
+        visible={isSidebarVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSidebarVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.sidebar}>
+            <SafeAreaView style={{ flex: 1 }}>
+              <View style={styles.sidebarHeader}>
+                <Text style={styles.sidebarHeading}>Chat History</Text>
+                <TouchableOpacity onPress={() => setSidebarVisible(false)} style={styles.closeBtn}>
+                  <X size={24} color={palette.mutedText} />
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity style={styles.newChatBtn} onPress={startNewChat}>
+                <Plus size={20} color="#FFF" />
+                <Text style={styles.newChatText}>New Chat</Text>
+              </TouchableOpacity>
+
+              <FlatList 
+                data={sessions}
+                keyExtractor={item => item.id}
+                contentContainerStyle={{paddingHorizontal: 16}}
+                renderItem={({ item }) => (
+                  <TouchableOpacity 
+                    style={[styles.historyItem, item.id === currentSessionId && styles.historyItemActive]}
+                    onPress={() => loadSession(item)}
+                  >
+                    <MessageSquare size={18} color={item.id === currentSessionId ? '#FFF' : palette.mutedText} />
+                    <Text style={[styles.historyText, item.id === currentSessionId && { color: '#FFF' }]} numberOfLines={1}>
+                      {item.title}
+                    </Text>
+                    <TouchableOpacity onPress={() => deleteSession(item.id)} style={styles.deleteBtn}>
+                      <Trash2 size={16} color={palette.danger} opacity={0.7} />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                )}
+              />
+            </SafeAreaView>
+          </View>
+          <TouchableOpacity style={styles.modalBackdrop} onPress={() => setSidebarVisible(false)} />
+        </View>
+      </Modal>
+
     </ScreenShell>
   );
 };
 
-// --- STYLES FOR MARKDOWN (AI Output) ---
+// --- STYLES ---
 const markdownStyles = {
-  // The main text color
-  body: { 
-    color: '#FFFFFF', 
-    fontSize: 16, 
-    lineHeight: 22 
-  },
-  // Headings (e.g. ### Overview)
-  heading3: { 
-    color: '#4da6ff', // Light Blue
-    fontSize: 18, 
-    fontWeight: 'bold', 
-    marginTop: 10, 
-    marginBottom: 5 
-  },
-  // Bold text (**text**)
-  strong: { 
-    fontWeight: 'bold',
-    color: '#E1E1E1' 
-  },
-  // Lists
-  bullet_list: { marginVertical: 5 },
-  // Tables
-  table: { 
-    borderWidth: 1, 
-    borderColor: '#444', 
-    borderRadius: 8, 
-    marginTop: 8,
-    marginBottom: 8
-  },
-  tr: { 
-    borderBottomWidth: 1, 
-    borderColor: '#444', 
-    flexDirection: 'row', 
-    alignItems: 'center'
-  },
-  th: { 
-    backgroundColor: '#333', 
-    padding: 8, 
-    color: '#FFF', 
-    fontWeight: 'bold',
-  },
-  td: { 
-    padding: 8, 
-    color: '#DDD',
-    minWidth: 80 
-  }
+  body: { color: '#E1E1E1', fontSize: 16, lineHeight: 24 },
+  heading3: { color: '#A5B4FC', fontSize: 18, fontWeight: 'bold', marginTop: 12 },
+  strong: { fontWeight: 'bold', color: '#FFFFFF' },
+  bullet_list: { marginVertical: 6 },
+  code_inline: { backgroundColor: '#2D2D30', color: '#FFD700', borderRadius: 4, paddingHorizontal: 6 },
 };
 
-// --- STYLES FOR SCREEN ---
 const styles = StyleSheet.create({
+  // Header
   header: {
-    paddingHorizontal: spacing.lg,
-    marginTop: spacing.md,
-    marginBottom: spacing.sm,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: palette.background, 
   },
-  titleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  title: {
-    color: palette.text,
-    fontSize: 24,
-    fontWeight: '700',
-  },
-  subtitle: {
-    color: palette.mutedText,
-    fontSize: 14,
-  },
-  badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  badgeReady: { backgroundColor: 'rgba(76, 175, 80, 0.2)' },
-  badgeError: { backgroundColor: 'rgba(255, 82, 82, 0.2)' },
-  badgeLoading: { backgroundColor: 'rgba(255, 193, 7, 0.2)' },
-  badgeText: { fontSize: 10, fontWeight: 'bold', color: palette.text },
-  chatContainer: {
-    flex: 1,
-    justifyContent: 'space-between',
-  },
-  listContent: {
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.lg,
-    flexGrow: 1,
-  },
-  msgBubble: {
-    maxWidth: '85%',
-    padding: 12,
-    borderRadius: 16,
-    marginBottom: 12,
-  },
-  userBubble: {
-    alignSelf: 'flex-end',
-    backgroundColor: '#007AFF',
-    borderBottomRightRadius: 4,
-  },
-  aiBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#2C2C2E',
-    borderBottomLeftRadius: 4,
-    borderWidth: 1,
-    borderColor: '#3F3F46',
-  },
-  msgText: {
-    color: '#FFFFFF', 
-    fontSize: 16,
-    lineHeight: 22,
-  },
-  botIconSmall: { marginBottom: 6 },
-  emptyState: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 60,
-  },
-  iconCircle: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: palette.surfaceHighlight,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: spacing.lg,
-    borderWidth: 1,
-    borderColor: palette.border,
-  },
-  emptyTitle: {
-    color: palette.text,
-    fontSize: 20,
-    fontWeight: '600',
-    marginBottom: spacing.sm,
-  },
-  emptyText: {
-    color: palette.mutedText,
-    fontSize: 14,
-    textAlign: 'center',
-    maxWidth: 260,
-    lineHeight: 22,
-  },
-  typingIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    marginBottom: 8,
-    gap: 8,
-  },
+  menuBtn: { padding: 8, marginLeft: -8 },
+  headerTitleContainer: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: palette.text },
+  modelTag: { backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 100 },
+  modelTagText: { fontSize: 10, color: palette.mutedText, fontWeight: '600' },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+
+  // Chat Layout
+  chatContainer: { flex: 1 },
+  listContent: { paddingHorizontal: 16, paddingBottom: 20 },
+
+  // Bubbles
+  msgWrapper: { marginBottom: 20, flexDirection: 'row', alignItems: 'flex-end' },
+  userWrapper: { justifyContent: 'flex-end' },
+  aiWrapper: { justifyContent: 'flex-start' },
+  aiIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: palette.accent, justifyContent: 'center', alignItems: 'center', marginRight: 8, marginBottom: 4 },
+  
+  msgBubble: { padding: 16, borderRadius: 20, maxWidth: '85%' },
+  userBubble: { backgroundColor: '#2563EB', borderBottomRightRadius: 4 },
+  aiBubble: { backgroundColor: '#1E1E1E', borderBottomLeftRadius: 4 },
+  msgText: { color: '#FFF', fontSize: 16, lineHeight: 24 },
+
+  // Typing
+  typingContainer: { flexDirection: 'row', alignItems: 'center', marginLeft: 20, marginBottom: 12, gap: 8 },
   typingText: { color: palette.mutedText, fontSize: 12 },
-  inputArea: {
+
+  // FIXED INPUT AREA
+  inputContainer: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
-    backgroundColor: palette.surface,
-    padding: spacing.sm,
-    marginHorizontal: spacing.md,
-    marginBottom: spacing.md,
-    borderRadius: 24,
+    alignItems: 'flex-end', // Aligns button to bottom
+    backgroundColor: '#1E1E1E',
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderRadius: 28,
+    padding: 8, // Extra padding for spacing
     borderWidth: 1,
-    borderColor: palette.border,
+    borderColor: 'rgba(255,255,255,0.1)',
   },
   input: {
     flex: 1,
-    color: palette.text,
-    maxHeight: 100,
+    color: '#FFF',
+    maxHeight: 120,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 16,
+    textAlignVertical: 'center', // Fix Android text alignment
   },
   sendBtn: {
-    backgroundColor: palette.primary,
+    backgroundColor: '#2563EB',
     width: 40,
     height: 40,
     borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 2,
+    marginBottom: 4, // Align visually with text
+    marginLeft: 8,
   },
+
+  // Sidebar
+  modalOverlay: { flex: 1, flexDirection: 'row' },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)' },
+  sidebar: { 
+    width: '85%', 
+    backgroundColor: '#121212', 
+    height: '100%', 
+    paddingTop: Platform.OS === 'android' ? 40 : 0,
+    borderRightWidth: 1,
+    borderRightColor: 'rgba(255,255,255,0.1)'
+  },
+  sidebarHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, marginBottom: 20 },
+  sidebarHeading: { fontSize: 22, fontWeight: 'bold', color: '#FFF' },
+  closeBtn: { padding: 8 },
+  
+  newChatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2563EB',
+    marginHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    marginBottom: 24,
+    gap: 8,
+  },
+  newChatText: { color: '#FFF', fontWeight: '700', fontSize: 16 },
+  
+  historyItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 4,
+    gap: 12,
+  },
+  historyItemActive: { backgroundColor: 'rgba(37, 99, 235, 0.15)' },
+  historyText: { color: palette.mutedText, fontSize: 15, flex: 1, fontWeight: '500' },
+  deleteBtn: { padding: 8 },
 });

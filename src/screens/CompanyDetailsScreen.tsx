@@ -65,17 +65,15 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
   const [quote, setQuote] = useState<StockQuote | null>(null);
   const [overview, setOverview] = useState<CompanyOverview | null>(null);
   const [metrics, setMetrics] = useState<FinancialMetrics | null>(null);
-  const [chartData, setChartData] = useState<ChartDataPoint[]>([]); // Kept for logic, though chart handles itself via webview mostly
+  const [chartData, setChartData] = useState<ChartDataPoint[]>([]); 
   const [selectedRange, setSelectedRange] = useState<ChartTimeRange>('1Y');
 
   useEffect(() => {
     loadCompanyData();
-  }, [symbol, selectedRange]);
+  }, [symbol]);
 
   const handleRangeChange = async (range: ChartTimeRange) => {
     setSelectedRange(range);
-    // In a real app, you'd fetch specific chart data here. 
-    // For TradingView widget, the range is often handled internally or via prop updates.
     const historicalData = await financeApiService.getHistoricalData(symbol, range);
     setChartData(historicalData);
   };
@@ -83,21 +81,26 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
   const loadCompanyData = async () => {
     setLoading(true);
     try {
-      const [quoteData, overviewData, metricsData, historicalData] = await Promise.all([
+      // Parallel Fetch for Speed
+      const [quoteData, overviewData, metricsData] = await Promise.all([
         financeApiService.getStockQuote(symbol),
         financeApiService.getCompanyOverview(symbol),
         financeApiService.getFinancialMetrics(symbol),
-        financeApiService.getHistoricalData(symbol, selectedRange),
       ]);
 
-      setQuote(quoteData || financeApiService.getMockStockQuote(symbol));
+      // Load Chart separately to not block UI if slow
+      const historicalData = await financeApiService.getHistoricalData(symbol, selectedRange);
+
+      // financeApiService now handles all fallbacks (API -> SQLite -> Mock)
+      setQuote(quoteData);
       setOverview(overviewData);
       setMetrics(metricsData);
       setChartData(historicalData);
+      
     } catch (error) {
       console.error('Error loading company data:', error);
-      // Fallback to mock
-      setQuote(financeApiService.getMockStockQuote(symbol));
+      // Only fallback here if EVERYTHING failed (rare)
+      if (!quote) setQuote(financeApiService.getMockStockQuote(symbol));
     } finally {
       setLoading(false);
     }

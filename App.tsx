@@ -1,7 +1,6 @@
 import React, { useState, createContext, useContext } from 'react';
 import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-// REMOVED: import { AppProvider } from '@/context/AppContext';
 import { WatchlistProvider } from '@/context/WatchlistContext';
 import { AppNavigator } from '@/navigation/AppNavigator';
 import { LoginScreen } from '@/screens';

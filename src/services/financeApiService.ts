@@ -239,78 +239,48 @@ class FinanceApiService {
     }
   }
 
-  // Obține cotația curentă pentru un simbol
   async getStockQuote(symbol: string): Promise<StockQuote | null> {
     await this.ensureInitialized();
 
     try {
-      // Check SQLite cache first (fresh if < 24h)
-      let cached: StockQuote | null = null;
-
-      try {
-        cached = await databaseService.getStockQuote(symbol);
-      } catch (dbErr) {
-        console.warn('SQLite quote read failed, falling back to AsyncStorage', dbErr);
-      }
-
+      // 1. Check Fresh Cache (< 24h)
+      const cached = await databaseService.getStockQuote(symbol);
       if (cached) {
-        console.log('✅ Using cached quote from SQLite');
+        console.log('✅ Using fresh cached quote from SQLite');
         return cached;
       }
 
-      // Try AsyncStorage cached quote before calling API
-      try {
-        const asCached = await offlineDataService.getCachedQuote(symbol);
-        if (asCached) {
-          console.log('✅ Using cached quote from AsyncStorage');
-          return asCached;
-        }
-      } catch (asErr) {
-        console.warn('AsyncStorage quote read failed', asErr);
-      }
-
+      // 2. Try API
       const url = `${FINANCIAL_API_URL}?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${FINANCIAL_API_KEY}`;
       console.log('📊 Fetching quote from API');
-
+      
       const response = await fetch(url);
       const data = await response.json();
 
-      if (data['Note']) {
-        console.warn('⚠️ Rate limit - checking old cache');
-
-        try {
-          const oldCached = await databaseService.getStockQuote(symbol, Infinity);
-          if (oldCached) return oldCached;
-        } catch (dbErr) {
-          console.warn(
-            'SQLite old-quote read failed during rate limit handling',
-            dbErr,
-          );
+      // 3. Handle Rate Limits / Errors
+      if (data['Note'] || data['Error Message'] || !data['Global Quote']) {
+        console.warn('⚠️ API Limit/Error - Checking OLD cache...');
+        
+        // FIX: Try to get ANY cached data (even if old) before using Mock
+        const oldCached = await databaseService.getStockQuote(symbol, Infinity); // Infinity = ignore age
+        if (oldCached) {
+             console.log('⚠️ Using OLD cached data instead of Mock');
+             return oldCached;
         }
 
-        try {
-          const asOld = await offlineDataService.getCachedQuote(symbol);
-          if (asOld) return asOld;
-        } catch (asErr) {
-          console.warn(
-            'AsyncStorage old-quote read failed during rate limit handling',
-            asErr,
-          );
-        }
-
+        // Only if DB is empty, use Mock
+        console.warn('⚠️ No cache found. Using Mock Data.');
         return this.getMockStockQuote(symbol);
       }
 
+      // 4. Parse & Save Real Data
       const quote = data['Global Quote'];
-
       if (quote && quote['05. price']) {
         const stockQuote: StockQuote = {
           symbol: quote['01. symbol'],
           price: parseFloat(quote['05. price']),
           change: parseFloat(quote['09. change']),
-          changePercent: parseFloat(
-            quote['10. change percent'].replace('%', ''),
-          ),
+          changePercent: parseFloat(quote['10. change percent'].replace('%', '')),
           volume: parseInt(quote['06. volume']),
           high: parseFloat(quote['03. high']),
           low: parseFloat(quote['04. low']),
@@ -319,43 +289,17 @@ class FinanceApiService {
           timestamp: quote['07. latest trading day'],
         };
 
-        // Save to SQLite and also cache in AsyncStorage as fallback
-        try {
-          await databaseService.saveStockQuote(stockQuote);
-          console.log('✅ Quote saved to SQLite');
-        } catch (saveErr) {
-          console.warn(
-            'Saving quote to SQLite failed, caching to AsyncStorage',
-            saveErr,
-          );
-          try {
-            await offlineDataService.cacheQuote(symbol, stockQuote as any);
-          } catch (asErr) {
-            console.warn('Caching quote to AsyncStorage failed', asErr);
-          }
-        }
-
+        await databaseService.saveStockQuote(stockQuote);
         return stockQuote;
       }
 
       return null;
     } catch (error) {
-      console.warn('Error fetching stock quote:', error);
-
-      try {
-        const oldCached = await databaseService.getStockQuote(symbol, Infinity);
-        if (oldCached) return oldCached;
-      } catch (dbErr) {
-        console.warn('SQLite old-quote read failed in catch handler', dbErr);
-      }
-
-      try {
-        const asOld = await offlineDataService.getCachedQuote(symbol);
-        if (asOld) return asOld;
-      } catch (asErr) {
-        console.warn('AsyncStorage old-quote read failed in catch handler', asErr);
-      }
-
+      console.warn('Network Error:', error);
+      // Fallback to old cache first
+      const oldCached = await databaseService.getStockQuote(symbol, Infinity);
+      if (oldCached) return oldCached;
+      
       return this.getMockStockQuote(symbol);
     }
   }

@@ -18,7 +18,32 @@ const REAL_MARKET_PRICES: Record<string, number> = {
 class OfflineDataService {
   private readonly STORAGE_KEY_PREFIX = '@finance_offline_';
   private readonly LAST_FETCH_KEY = '@finance_last_fetch_';
+  private readonly CHAT_STORAGE_KEY = '@finai_chats'; // NEW: Chat History Key
   private readonly CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+
+  /**
+   * Save complete chat history (array of sessions)
+   */
+  async saveChatSessions(sessions: any[]): Promise<void> {
+    try {
+      await AsyncStorage.setItem(this.CHAT_STORAGE_KEY, JSON.stringify(sessions));
+    } catch (error) {
+      console.error('Error saving chat sessions:', error);
+    }
+  }
+
+  /**
+   * Load complete chat history
+   */
+  async getChatSessions(): Promise<any[]> {
+    try {
+      const json = await AsyncStorage.getItem(this.CHAT_STORAGE_KEY);
+      return json ? JSON.parse(json) : [];
+    } catch (error) {
+      console.error('Error loading chat sessions:', error);
+      return [];
+    }
+  }
 
   /**
    * Fetch and cache real data from API, fallback to local prices
@@ -65,14 +90,11 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Get quote based on real market prices (for offline mode)
-   */
   private getLocalQuote(symbol: string): StockQuote {
     const price = REAL_MARKET_PRICES[symbol] || 100;
     
     const seed = symbol.charCodeAt(0) + symbol.charCodeAt(symbol.length - 1);
-    const variation = ((seed % 100) / 100 - 0.5) * 0.02; // Deterministic ±1%
+    const variation = ((seed % 100) / 100 - 0.5) * 0.02; 
     const change = price * variation;
     const changePercent = variation * 100;
 
@@ -90,10 +112,6 @@ class OfflineDataService {
     };
   }
 
-  /**
-   * Cache quote data locally
-   * CHANGED TO PUBLIC to fix access error in financeApiService
-   */
   public async cacheQuote(symbol: string, quote: StockQuote): Promise<void> {
     try {
       const key = `${this.STORAGE_KEY_PREFIX}quote_${symbol}`;
@@ -103,10 +121,6 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Get cached quote
-   * CHANGED TO PUBLIC to fix access error in financeApiService
-   */
   public async getCachedQuote(symbol: string): Promise<StockQuote | null> {
     try {
       const key = `${this.STORAGE_KEY_PREFIX}quote_${symbol}`;
@@ -118,9 +132,6 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Set last fetch timestamp
-   */
   private async setLastFetchTime(symbol: string, timestamp: number): Promise<void> {
     try {
       const key = `${this.LAST_FETCH_KEY}${symbol}`;
@@ -130,9 +141,6 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Get last fetch timestamp
-   */
   private async getLastFetchTime(symbol: string): Promise<number | null> {
     try {
       const key = `${this.LAST_FETCH_KEY}${symbol}`;
@@ -144,9 +152,6 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Cache historical chart data
-   */
   async cacheChartData(symbol: string, range: string, data: ChartDataPoint[]): Promise<void> {
     try {
       const key = `${this.STORAGE_KEY_PREFIX}chart_${symbol}_${range}`;
@@ -156,9 +161,6 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Get cached chart data
-   */
   async getCachedChartData(symbol: string, range: string): Promise<ChartDataPoint[] | null> {
     try {
       const key = `${this.STORAGE_KEY_PREFIX}chart_${symbol}_${range}`;
@@ -170,9 +172,6 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Update local baseline prices (can be called periodically when online)
-   */
   async updateBaselinePrices(prices: Record<string, number>): Promise<void> {
     try {
       const key = `${this.STORAGE_KEY_PREFIX}baseline_prices`;
@@ -182,9 +181,6 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Get local baseline prices
-   */
   async getBaselinePrices(): Promise<Record<string, number>> {
     try {
       const key = `${this.STORAGE_KEY_PREFIX}baseline_prices`;
@@ -196,9 +192,6 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Cache search results
-   */
   async cacheSearchResults(query: string, companies: any[]): Promise<void> {
     try {
       const key = `${this.STORAGE_KEY_PREFIX}search_${query.toLowerCase()}`;
@@ -211,9 +204,6 @@ class OfflineDataService {
     }
   }
 
-  /**
-   * Get cached search results
-   */
   async getCachedSearchResults(query: string): Promise<any[] | null> {
     try {
       const key = `${this.STORAGE_KEY_PREFIX}search_${query.toLowerCase()}`;
@@ -223,12 +213,10 @@ class OfflineDataService {
       const cached = JSON.parse(data);
       const age = Date.now() - cached.timestamp;
       
-      // Search cache lasts 7 days
       if (age < 7 * 24 * 60 * 60 * 1000) {
         console.log('✅ Using cached search results for', query);
         return cached.results;
       }
-      
       return null;
     } catch (error) {
       console.error('Error getting cached search:', error);

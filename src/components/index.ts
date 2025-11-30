@@ -1,4 +1,3 @@
-export * from './MessageBubble';
 export * from './MetricCard';
 export * from './ScreenShell';
 export * from './SectionHeader';
