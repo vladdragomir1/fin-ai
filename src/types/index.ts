@@ -50,7 +50,7 @@ export interface ChartDataPoint {
   timestamp: number;
 }
 
-export type ChartTimeRange = '1D' | '1W' | '1M' | '3M' | '6M' | '1Y' | '5Y' | 'ALL';
+export type ChartTimeRange = '1M' | '6M' | '1Y' | '5Y' | 'ALL';
 
 export interface WatchlistItem {
   symbol: string;

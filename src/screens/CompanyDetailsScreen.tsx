@@ -17,15 +17,19 @@ import {
   BarChart2, 
   Briefcase,
   Users,
-  Globe
+  Globe,
+  AlertCircle // Added for empty state
 } from 'lucide-react-native';
 
 import { ScreenShell, TradingViewChart } from '@/components';
 import { financeApiService } from '@/services/financeApiService';
 import { palette, spacing, layout } from '@/theme';
 import { formatCurrency } from '@/utils';
-import type { ChartDataPoint, ChartTimeRange, CompanyOverview, FinancialMetrics, StockQuote } from '@/types';
+import type { ChartDataPoint, CompanyOverview, FinancialMetrics, StockQuote } from '@/types';
 import type { RootStackParamList } from '@/navigation/types';
+
+// Define the ranges strictly matching your Service logic
+type AllowedRange = '1M' | '6M' | '1Y' | '5Y' | 'ALL';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CompanyDetails'>;
 
@@ -42,8 +46,9 @@ const DetailCard = ({ label, value, icon: Icon, color = palette.text }: any) => 
   </View>
 );
 
-const RangeSelector = ({ selected, onSelect }: { selected: string, onSelect: (r: ChartTimeRange) => void }) => {
-  const ranges: ChartTimeRange[] = ['1D', '1W', '1M', '3M', '1Y', '5Y'];
+const RangeSelector = ({ selected, onSelect }: { selected: string, onSelect: (r: AllowedRange) => void }) => {
+  // Updated ranges to match Mboum API optimization
+  const ranges: AllowedRange[] = ['1M', '6M', '1Y', '5Y', 'ALL'];
   return (
     <View style={styles.rangeContainer}>
       {ranges.map((r) => (
@@ -61,37 +66,49 @@ const RangeSelector = ({ selected, onSelect }: { selected: string, onSelect: (r:
 
 export const CompanyDetailsScreen = ({ route }: Props) => {
   const { symbol, name } = route.params;
+  
+  // Data States
   const [loading, setLoading] = useState(true);
   const [quote, setQuote] = useState<StockQuote | null>(null);
   const [overview, setOverview] = useState<CompanyOverview | null>(null);
   const [metrics, setMetrics] = useState<FinancialMetrics | null>(null);
+  
+  // Chart Specific States
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]); 
-  const [selectedRange, setSelectedRange] = useState<ChartTimeRange>('1Y');
+  const [selectedRange, setSelectedRange] = useState<AllowedRange>('1Y');
+  const [chartLoading, setChartLoading] = useState(false);
 
   useEffect(() => {
     loadCompanyData();
   }, [symbol]);
 
-  const handleRangeChange = async (range: ChartTimeRange) => {
+  const handleRangeChange = async (range: AllowedRange) => {
+    if (range === selectedRange) return;
+    
     setSelectedRange(range);
-    const historicalData = await financeApiService.getHistoricalData(symbol, range);
-    setChartData(historicalData);
+    setChartLoading(true); // Only show spinner on chart, not whole screen
+    
+    try {
+      const historicalData = await financeApiService.getHistoricalData(symbol, range);
+      setChartData(historicalData);
+    } catch (e) {
+      console.warn('Failed to switch range', e);
+    } finally {
+      setChartLoading(false);
+    }
   };
 
   const loadCompanyData = async () => {
     setLoading(true);
     try {
-      // Parallel Fetch for Speed
-      const [quoteData, overviewData, metricsData] = await Promise.all([
+      // Parallel Fetch: Get Quote, Overview, Metrics AND Chart data
+      const [quoteData, overviewData, metricsData, historicalData] = await Promise.all([
         financeApiService.getStockQuote(symbol),
         financeApiService.getCompanyOverview(symbol),
         financeApiService.getFinancialMetrics(symbol),
+        financeApiService.getHistoricalData(symbol, selectedRange),
       ]);
 
-      // Load Chart separately to not block UI if slow
-      const historicalData = await financeApiService.getHistoricalData(symbol, selectedRange);
-
-      // financeApiService now handles all fallbacks (API -> SQLite -> Mock)
       setQuote(quoteData);
       setOverview(overviewData);
       setMetrics(metricsData);
@@ -99,7 +116,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
       
     } catch (error) {
       console.error('Error loading company data:', error);
-      // Only fallback here if EVERYTHING failed (rare)
+      // Fallback: If everything fails, try to get at least a mock quote to show the screen
       if (!quote) setQuote(financeApiService.getMockStockQuote(symbol));
     } finally {
       setLoading(false);
@@ -145,7 +162,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
           )}
           
           <Text style={styles.timestamp}>
-            <Clock size={10} color={palette.mutedText} /> Market Open • Data delayed 15m
+            <Clock size={10} color={palette.mutedText} /> Market Open • Delayed 15m
           </Text>
         </View>
 
@@ -155,8 +172,23 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
             <Text style={styles.sectionTitle}>Price History</Text>
             <RangeSelector selected={selectedRange} onSelect={handleRangeChange} />
           </View>
+          
           <View style={styles.chartWrapper}>
-            <TradingViewChart symbol={symbol} height={280} />
+             {chartLoading ? (
+                <View style={styles.chartCenterInfo}>
+                   <ActivityIndicator color={palette.mutedText} />
+                </View>
+             ) : chartData.length > 0 ? (
+                <TradingViewChart 
+                  symbol={symbol} 
+                  height={280} 
+                />
+             ) : (
+                <View style={styles.chartCenterInfo}>
+                   <AlertCircle color={palette.mutedText} size={24} />
+                   <Text style={{color: palette.mutedText, marginTop: 8}}>No chart data available</Text>
+                </View>
+             )}
           </View>
         </View>
 
@@ -240,7 +272,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
               </View>
               {overview.description && (
                 <View style={styles.descContainer}>
-                   <Text style={styles.description}>{overview.description}</Text>
+                    <Text style={styles.description}>{overview.description}</Text>
                 </View>
               )}
             </View>
@@ -338,6 +370,7 @@ const styles = StyleSheet.create({
     borderColor: palette.border,
     padding: spacing.md,
     marginBottom: spacing.xl,
+    minHeight: 330,
   },
   chartHeader: {
     flexDirection: 'row',
@@ -380,6 +413,12 @@ const styles = StyleSheet.create({
     height: 280,
     overflow: 'hidden',
     borderRadius: 8,
+  },
+  chartCenterInfo: {
+    height: '100%',
+    width: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
   // Sections
