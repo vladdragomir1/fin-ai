@@ -73,6 +73,20 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
   const [overview, setOverview] = useState<CompanyOverview | null>(null);
   const [metrics, setMetrics] = useState<FinancialMetrics | null>(null);
   
+  // Additional Data Modules
+  const [calendarEvents, setCalendarEvents] = useState<any>(null);
+  const [earningsHistory, setEarningsHistory] = useState<any>(null);
+  const [incomeStatement, setIncomeStatement] = useState<any>(null);
+  const [balanceSheet, setBalanceSheet] = useState<any>(null);
+  const [cashflowStatement, setCashflowStatement] = useState<any>(null);
+  const [institutionOwnership, setInstitutionOwnership] = useState<any>(null);
+  const [insiderHolders, setInsiderHolders] = useState<any>(null);
+  const [recommendationTrend, setRecommendationTrend] = useState<any>(null);
+  const [upgradeDowngradeHistory, setUpgradeDowngradeHistory] = useState<any>(null);
+  const [secFilings, setSecFilings] = useState<any>(null);
+  const [indexTrend, setIndexTrend] = useState<any>(null);
+  const [netSharePurchase, setNetSharePurchase] = useState<any>(null);
+  
   // Chart Specific States
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]); 
   const [selectedRange, setSelectedRange] = useState<AllowedRange>('1Y');
@@ -101,69 +115,88 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
   const loadCompanyData = async () => {
     setLoading(true);
     try {
-      // Parallel Fetch: Get Quote, Overview, Metrics, Chart AND ALL Module data
+      // Phase 1: Load essential data first (faster initial render)
       const [
         quoteData, 
         overviewData, 
         metricsData, 
         historicalData,
-        statisticsData,
-        financialData,
-        incomeStatement,
-        balanceSheet,
-        cashflowStatement
       ] = await Promise.all([
         financeApiService.getStockQuote(symbol),
         financeApiService.getCompanyOverview(symbol),
         financeApiService.getFinancialMetrics(symbol),
         financeApiService.getHistoricalData(symbol, selectedRange),
-        financeApiService.getStockStatistics(symbol),
-        financeApiService.getFinancialData(symbol),
-        financeApiService.getIncomeStatement(symbol),
-        financeApiService.getBalanceSheet(symbol),
-        financeApiService.getCashflowStatement(symbol),
       ]);
 
       setQuote(quoteData);
       setOverview(overviewData);
-      
-      // Enhance metrics with comprehensive module data
-      if (metricsData) {
-        // Merge statistics data into metrics
-        if (statisticsData) {
-          metricsData.beta = statisticsData.beta || metricsData.beta;
-          metricsData.averageVolume = statisticsData.averageVolume || metricsData.averageVolume;
-        }
-        
-        // Merge financial data
-        if (financialData) {
-          metricsData.marketCap = financialData.marketCap || metricsData.marketCap;
-          metricsData.peRatio = financialData.trailingPE || metricsData.peRatio;
-          metricsData.dividendYield = financialData.dividendYield || metricsData.dividendYield;
-        }
-        
-        setMetrics(metricsData);
-      }
-      
+      setMetrics(metricsData);
       setChartData(historicalData);
+      setLoading(false); // Show UI with basic data
       
-      // Log comprehensive data for debugging
-      console.log('📊 Loaded comprehensive company data:', {
-        hasQuote: !!quoteData,
-        hasOverview: !!overviewData,
-        hasMetrics: !!metricsData,
-        hasStatistics: !!statisticsData,
-        hasFinancialData: !!financialData,
-        hasIncomeStatement: !!incomeStatement,
-        hasBalanceSheet: !!balanceSheet,
-        hasCashflow: !!cashflowStatement,
+      // Phase 2: Load additional modules in background (non-blocking)
+      Promise.all([
+        financeApiService.getStockModule(symbol, 'calendar-events'),
+        financeApiService.getStockModule(symbol, 'earnings-history'),
+        financeApiService.getStockModule(symbol, 'income-statement'),
+        financeApiService.getStockModule(symbol, 'balance-sheet'),
+        financeApiService.getStockModule(symbol, 'cashflow-statement'),
+        financeApiService.getStockModule(symbol, 'institution-ownership'),
+        financeApiService.getStockModule(symbol, 'insider-holders'),
+        financeApiService.getStockModule(symbol, 'recommendation-trend'),
+        financeApiService.getStockModule(symbol, 'upgrade-downgrade-history'),
+        financeApiService.getStockModule(symbol, 'sec-filings'),
+        financeApiService.getStockModule(symbol, 'index-trend'),
+        financeApiService.getStockModule(symbol, 'net-share-purchase-activity'),
+      ]).then(([
+        calendarData,
+        earningsHistoryData,
+        incomeData,
+        balanceData,
+        cashflowData,
+        institutionData,
+        insiderHoldersData,
+        recommendationData,
+        upgradeDowngradeData,
+        secFilingsData,
+        indexTrendData,
+        netSharePurchaseData,
+      ]) => {
+        setCalendarEvents(calendarData);
+        setEarningsHistory(earningsHistoryData);
+        setIncomeStatement(incomeData);
+        setBalanceSheet(balanceData);
+        setCashflowStatement(cashflowData);
+        setInstitutionOwnership(institutionData);
+        setInsiderHolders(insiderHoldersData);
+        setRecommendationTrend(recommendationData);
+        setUpgradeDowngradeHistory(upgradeDowngradeData);
+        setSecFilings(secFilingsData);
+        setIndexTrend(indexTrendData);
+        setNetSharePurchase(netSharePurchaseData);
+        
+        console.log('📊 Additional modules loaded:', {
+          hasCalendar: !!calendarData,
+          hasEarningsHistory: !!earningsHistoryData,
+          hasIncome: !!incomeData,
+          hasBalance: !!balanceData,
+          hasCashflow: !!cashflowData,
+          hasInstitution: !!institutionData,
+          hasInsiderHolders: !!insiderHoldersData,
+          hasRecommendation: !!recommendationData,
+          hasUpgradeDowngrade: !!upgradeDowngradeData,
+          hasSecFilings: !!secFilingsData,
+          hasIndexTrend: !!indexTrendData,
+          hasNetSharePurchase: !!netSharePurchaseData,
+        });
+      }).catch(err => {
+        console.warn('⚠️ Some additional modules failed to load:', err);
       });
       
     } catch (error) {
       console.error('Error loading company data:', error);
       // Fallback: If everything fails, try to get at least a mock quote to show the screen
       if (!quote) setQuote(financeApiService.getMockStockQuote(symbol));
-    } finally {
       setLoading(false);
     }
   };
@@ -287,7 +320,363 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
           </View>
         )}
 
-        {/* 5. Company Profile */}
+        {/* 5. Earnings & Events */}
+        {calendarEvents && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>EARNINGS & EVENTS</Text>
+            <View style={styles.grid}>
+              {calendarEvents?.earnings?.earningsDate?.[0]?.fmt && (
+                <DetailCard 
+                  label="Next Earnings" 
+                  value={new Date(calendarEvents.earnings.earningsDate[0].raw * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  icon={Clock}
+                />
+              )}
+              {calendarEvents?.earnings?.earningsAverage?.fmt && (
+                <DetailCard 
+                  label="EPS Estimate" 
+                  value={`$${calendarEvents.earnings.earningsAverage.fmt}`}
+                  color={palette.accent}
+                />
+              )}
+              {calendarEvents?.earnings?.revenueAverage?.fmt && (
+                <DetailCard 
+                  label="Revenue Est." 
+                  value={calendarEvents.earnings.revenueAverage.fmt}
+                />
+              )}
+              {calendarEvents?.dividendDate?.fmt && (
+                <DetailCard 
+                  label="Div Date" 
+                  value={new Date(calendarEvents.dividendDate.raw * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  color={palette.success}
+                />
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* 6. Financial Highlights */}
+        {(incomeStatement || balanceSheet || cashflowStatement) && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>FINANCIAL HIGHLIGHTS</Text>
+            <View style={styles.grid}>
+              {incomeStatement?.incomeStatementHistory?.incomeStatementHistory?.[0] && (() => {
+                const latest = incomeStatement.incomeStatementHistory.incomeStatementHistory[0];
+                return (
+                  <>
+                    {latest.totalRevenue?.fmt && (
+                      <DetailCard 
+                        label="Revenue (TTM)" 
+                        value={latest.totalRevenue.fmt}
+                        icon={DollarSign}
+                      />
+                    )}
+                    {latest.netIncome?.fmt && (
+                      <DetailCard 
+                        label="Net Income" 
+                        value={latest.netIncome.fmt}
+                        color={palette.success}
+                      />
+                    )}
+                    {latest.grossProfit?.fmt && (
+                      <DetailCard 
+                        label="Gross Profit" 
+                        value={latest.grossProfit.fmt}
+                      />
+                    )}
+                    {latest.ebit?.fmt && (
+                      <DetailCard 
+                        label="EBIT" 
+                        value={latest.ebit.fmt}
+                      />
+                    )}
+                  </>
+                );
+              })()}
+              {balanceSheet?.balanceSheetStatements?.[0] && (() => {
+                const latest = balanceSheet.balanceSheetStatements[0];
+                return (
+                  <>
+                    {latest.totalAssets?.fmt && (
+                      <DetailCard 
+                        label="Total Assets" 
+                        value={latest.totalAssets.fmt}
+                      />
+                    )}
+                    {latest.totalLiab?.fmt && (
+                      <DetailCard 
+                        label="Total Liabilities" 
+                        value={latest.totalLiab.fmt}
+                        color={palette.danger}
+                      />
+                    )}
+                  </>
+                );
+              })()}
+              {cashflowStatement?.cashflowStatements?.[0] && (() => {
+                const latest = cashflowStatement.cashflowStatements[0];
+                return (
+                  <>
+                    {latest.totalCashFromOperatingActivities?.fmt && (
+                      <DetailCard 
+                        label="Operating CF" 
+                        value={latest.totalCashFromOperatingActivities.fmt}
+                        color={palette.accent}
+                      />
+                    )}
+                    {latest.freeCashflow?.fmt && (
+                      <DetailCard 
+                        label="Free Cash Flow" 
+                        value={latest.freeCashflow.fmt}
+                        color={palette.success}
+                      />
+                    )}
+                  </>
+                );
+              })()}
+            </View>
+          </View>
+        )}
+
+        {/* 7. Earnings History */}
+        {earningsHistory?.history && earningsHistory.history.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>EARNINGS HISTORY</Text>
+            {earningsHistory.history.slice(0, 4).map((earning: any, idx: number) => {
+              const beat = earning.surprisePercent?.raw && earning.surprisePercent.raw > 0;
+              const miss = earning.surprisePercent?.raw && earning.surprisePercent.raw < 0;
+              return (
+                <View key={idx} style={styles.earningCard}>
+                  <View style={styles.earningRow}>
+                    <Text style={styles.earningQuarter}>{earning.quarter?.fmt || 'N/A'}</Text>
+                    <View style={[styles.earningBadge, { backgroundColor: beat ? palette.successBg : miss ? palette.dangerBg : palette.surfaceLight }]}>
+                      <Text style={[styles.earningBadgeText, { color: beat ? palette.success : miss ? palette.danger : palette.mutedText }]}>
+                        {beat ? 'Beat' : miss ? 'Miss' : 'Met'}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.earningDetails}>
+                    <View style={styles.earningCol}>
+                      <Text style={styles.earningLabel}>Actual EPS</Text>
+                      <Text style={styles.earningValue}>${earning.epsActual?.fmt || 'N/A'}</Text>
+                    </View>
+                    <View style={styles.earningCol}>
+                      <Text style={styles.earningLabel}>Estimate</Text>
+                      <Text style={styles.earningValue}>${earning.epsEstimate?.fmt || 'N/A'}</Text>
+                    </View>
+                    <View style={styles.earningCol}>
+                      <Text style={styles.earningLabel}>Difference</Text>
+                      <Text style={[styles.earningValue, { color: beat ? palette.success : miss ? palette.danger : palette.text }]}>
+                        ${earning.epsDifference?.fmt || 'N/A'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* 8. Analyst Recommendations */}
+        {recommendationTrend?.trend && recommendationTrend.trend.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>ANALYST RATINGS</Text>
+            {recommendationTrend.trend.slice(0, 1).map((rec: any, idx: number) => {
+              const total = (rec.strongBuy || 0) + (rec.buy || 0) + (rec.hold || 0) + (rec.sell || 0) + (rec.strongSell || 0);
+              const strongBuyPct = total > 0 ? ((rec.strongBuy || 0) / total) * 100 : 0;
+              const buyPct = total > 0 ? ((rec.buy || 0) / total) * 100 : 0;
+              const holdPct = total > 0 ? ((rec.hold || 0) / total) * 100 : 0;
+              const sellPct = total > 0 ? ((rec.sell || 0) / total) * 100 : 0;
+              const strongSellPct = total > 0 ? ((rec.strongSell || 0) / total) * 100 : 0;
+              
+              return (
+                <View key={idx} style={styles.ratingCard}>
+                  <Text style={styles.ratingPeriod}>{rec.period || 'Current Month'}</Text>
+                  <View style={styles.ratingBar}>
+                    {strongBuyPct > 0 && <View style={[styles.ratingSegment, { width: `${strongBuyPct}%`, backgroundColor: '#059669' }]} />}
+                    {buyPct > 0 && <View style={[styles.ratingSegment, { width: `${buyPct}%`, backgroundColor: '#10b981' }]} />}
+                    {holdPct > 0 && <View style={[styles.ratingSegment, { width: `${holdPct}%`, backgroundColor: '#6b7280' }]} />}
+                    {sellPct > 0 && <View style={[styles.ratingSegment, { width: `${sellPct}%`, backgroundColor: '#ef4444' }]} />}
+                    {strongSellPct > 0 && <View style={[styles.ratingSegment, { width: `${strongSellPct}%`, backgroundColor: '#dc2626' }]} />}
+                  </View>
+                  <View style={styles.ratingLegend}>
+                    <View style={styles.ratingItem}>
+                      <View style={[styles.ratingDot, { backgroundColor: '#059669' }]} />
+                      <Text style={styles.ratingText}>Strong Buy: {rec.strongBuy || 0}</Text>
+                    </View>
+                    <View style={styles.ratingItem}>
+                      <View style={[styles.ratingDot, { backgroundColor: '#10b981' }]} />
+                      <Text style={styles.ratingText}>Buy: {rec.buy || 0}</Text>
+                    </View>
+                    <View style={styles.ratingItem}>
+                      <View style={[styles.ratingDot, { backgroundColor: '#6b7280' }]} />
+                      <Text style={styles.ratingText}>Hold: {rec.hold || 0}</Text>
+                    </View>
+                    <View style={styles.ratingItem}>
+                      <View style={[styles.ratingDot, { backgroundColor: '#ef4444' }]} />
+                      <Text style={styles.ratingText}>Sell: {rec.sell || 0}</Text>
+                    </View>
+                    <View style={styles.ratingItem}>
+                      <View style={[styles.ratingDot, { backgroundColor: '#dc2626' }]} />
+                      <Text style={styles.ratingText}>Strong Sell: {rec.strongSell || 0}</Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* 9. Upgrade/Downgrade History */}
+        {upgradeDowngradeHistory?.history && upgradeDowngradeHistory.history.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>RECENT ANALYST ACTIONS</Text>
+            {upgradeDowngradeHistory.history.slice(0, 5).map((action: any, idx: number) => {
+              const isUpgrade = action.action?.toLowerCase().includes('up') || action.toGrade?.toLowerCase().includes('buy');
+              const isDowngrade = action.action?.toLowerCase().includes('down') || action.toGrade?.toLowerCase().includes('sell');
+              
+              return (
+                <View key={idx} style={styles.actionCard}>
+                  <View style={styles.actionHeader}>
+                    <Text style={styles.actionFirm}>{action.firm || 'Analyst'}</Text>
+                    <View style={[styles.actionBadge, { backgroundColor: isUpgrade ? palette.successBg : isDowngrade ? palette.dangerBg : palette.surfaceLight }]}>
+                      <Text style={[styles.actionBadgeText, { color: isUpgrade ? palette.success : isDowngrade ? palette.danger : palette.mutedText }]}>
+                        {action.action || 'Maintained'}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.actionDetails}>
+                    <Text style={styles.actionGrade}>
+                      {action.fromGrade ? `${action.fromGrade} → ` : ''}{action.toGrade || 'N/A'}
+                    </Text>
+                    {action.currentPriceTarget && (
+                      <Text style={styles.actionTarget}>
+                        Price Target: ${action.currentPriceTarget.fmt || action.currentPriceTarget.raw || 'N/A'}
+                      </Text>
+                    )}
+                  </View>
+                  <Text style={styles.actionDate}>
+                    {action.epochGradeDate ? new Date(action.epochGradeDate * 1000).toLocaleDateString() : 'N/A'}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        {/* 10. Ownership & Insiders */}
+        {(institutionOwnership || insiderHolders) && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>OWNERSHIP & INSIDER ACTIVITY</Text>
+            {institutionOwnership?.ownershipList?.slice(0, 3).map((owner: any, idx: number) => (
+              <View key={idx} style={styles.ownerCard}>
+                <View style={styles.ownerRow}>
+                  <Text style={styles.ownerName}>{owner.organization}</Text>
+                  <Text style={styles.ownerValue}>{owner.pctHeld?.fmt || 'N/A'}</Text>
+                </View>
+                <Text style={styles.ownerShares}>
+                  {owner.position?.fmt} shares • {owner.reportDate?.fmt}
+                </Text>
+              </View>
+            ))}
+            {insiderHolders?.holders?.slice(0, 5).map((holder: any, idx: number) => (
+              <View key={idx} style={styles.insiderCard}>
+                <View style={styles.insiderRow}>
+                  <Text style={styles.insiderName}>{holder.name || 'N/A'}</Text>
+                  <Text style={styles.insiderRelation}>{holder.relation || 'N/A'}</Text>
+                </View>
+                <Text style={styles.insiderDetails}>
+                  {holder.transactionDescription || 'No recent transactions'}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* 11. SEC Filings */}
+        {secFilings?.filings && secFilings.filings.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>SEC FILINGS</Text>
+            {secFilings.filings.slice(0, 8).map((filing: any, idx: number) => (
+              <View key={idx} style={styles.filingCard}>
+                <View style={styles.filingHeader}>
+                  <View style={styles.filingType}>
+                    <Text style={styles.filingTypeText}>{filing.type || 'N/A'}</Text>
+                  </View>
+                  <Text style={styles.filingDate}>{filing.date || 'N/A'}</Text>
+                </View>
+                <Text style={styles.filingTitle} numberOfLines={2}>
+                  {filing.title || 'No title'}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* 12. Market Index Trend */}
+        {indexTrend?.estimates && indexTrend.estimates.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>INDEX GROWTH ESTIMATES</Text>
+            <View style={styles.indexCard}>
+              <Text style={styles.indexSymbol}>{indexTrend.symbol || 'Market Index'}</Text>
+              <View style={styles.indexGrid}>
+                {indexTrend.estimates.map((est: any, idx: number) => (
+                  <View key={idx} style={styles.indexItem}>
+                    <Text style={styles.indexPeriod}>{est.period}</Text>
+                    <Text style={styles.indexGrowth}>
+                      {est.growth?.fmt ? `${(parseFloat(est.growth.fmt) * 100).toFixed(1)}%` : 'N/A'}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* 13. Net Share Purchase Activity */}
+        {netSharePurchase && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>INSIDER TRADING ACTIVITY (6M)</Text>
+            <View style={styles.netShareCard}>
+              <View style={styles.netShareRow}>
+                <View style={styles.netShareCol}>
+                  <Text style={styles.netShareLabel}>Buys</Text>
+                  <Text style={[styles.netShareValue, { color: palette.success }]}>
+                    {netSharePurchase.buyInfoCount?.fmt || '0'}
+                  </Text>
+                  <Text style={styles.netShareShares}>{netSharePurchase.buyInfoShares?.fmt || 'N/A'} shares</Text>
+                  <Text style={styles.netSharePercent}>{netSharePurchase.buyPercentInsiderShares?.fmt || '0%'}</Text>
+                </View>
+                <View style={styles.netShareDivider} />
+                <View style={styles.netShareCol}>
+                  <Text style={styles.netShareLabel}>Sells</Text>
+                  <Text style={[styles.netShareValue, { color: palette.danger }]}>
+                    {netSharePurchase.sellInfoCount?.fmt || '0'}
+                  </Text>
+                  <Text style={styles.netShareShares}>{netSharePurchase.sellInfoShares?.fmt || 'N/A'} shares</Text>
+                  <Text style={styles.netSharePercent}>{netSharePurchase.sellPercentInsiderShares?.fmt || '0%'}</Text>
+                </View>
+                <View style={styles.netShareDivider} />
+                <View style={styles.netShareCol}>
+                  <Text style={styles.netShareLabel}>Net</Text>
+                  <Text style={[styles.netShareValue, { color: (netSharePurchase.netInfoShares?.raw || 0) >= 0 ? palette.success : palette.danger }]}>
+                    {netSharePurchase.netInfoCount?.fmt || '0'}
+                  </Text>
+                  <Text style={styles.netShareShares}>{netSharePurchase.netInfoShares?.fmt || 'N/A'} shares</Text>
+                  <Text style={styles.netSharePercent}>{netSharePurchase.netPercentInsiderShares?.fmt || '0%'}</Text>
+                </View>
+              </View>
+              <View style={styles.netShareFooter}>
+                <Text style={styles.netShareFooterText}>
+                  Total Insider Shares: {netSharePurchase.totalInsiderShares?.fmt || 'N/A'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* 14. Company Profile */}
         {overview && (
           <View style={styles.section}>
             <Text style={styles.sectionHeader}>PROFILE</Text>
@@ -296,13 +685,13 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                 <View style={styles.profileItem}>
                   <Briefcase size={14} color={palette.mutedText} style={{marginBottom: 4}} />
                   <Text style={styles.profileLabel}>Sector</Text>
-                  <Text style={styles.profileValue}>{overview.sector}</Text>
+                  <Text style={styles.profileValue}>{overview.sector || 'N/A'}</Text>
                 </View>
                 <View style={styles.dividerVertical} />
                 <View style={styles.profileItem}>
                   <Globe size={14} color={palette.mutedText} style={{marginBottom: 4}} />
                   <Text style={styles.profileLabel}>Industry</Text>
-                  <Text style={styles.profileValue}>{overview.industry}</Text>
+                  <Text style={styles.profileValue}>{overview.industry || 'N/A'}</Text>
                 </View>
                 {overview.employees && (
                   <>
@@ -554,5 +943,341 @@ const styles = StyleSheet.create({
     color: palette.mutedText,
     fontSize: 14,
     lineHeight: 22,
+  },
+
+  // Ownership & Insider Cards
+  ownerCard: {
+    backgroundColor: palette.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  ownerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  ownerName: {
+    color: palette.text,
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
+  },
+  ownerValue: {
+    color: palette.accent,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  ownerShares: {
+    color: palette.mutedText,
+    fontSize: 12,
+  },
+  insiderCard: {
+    backgroundColor: palette.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  insiderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  insiderName: {
+    color: palette.text,
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
+  },
+  insiderType: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  insiderDetails: {
+    color: palette.mutedText,
+    fontSize: 12,
+  },
+  insiderRelation: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: palette.accent,
+    textTransform: 'uppercase',
+  },
+
+  // Earnings History Cards
+  earningCard: {
+    backgroundColor: palette.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  earningRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  earningQuarter: {
+    color: palette.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  earningBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  earningBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  earningDetails: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  earningCol: {
+    flex: 1,
+  },
+  earningLabel: {
+    color: palette.mutedText,
+    fontSize: 11,
+    marginBottom: 2,
+  },
+  earningValue: {
+    color: palette.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
+  // Analyst Ratings
+  ratingCard: {
+    backgroundColor: palette.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: spacing.md,
+  },
+  ratingPeriod: {
+    color: palette.text,
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: spacing.sm,
+  },
+  ratingBar: {
+    flexDirection: 'row',
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginBottom: spacing.md,
+  },
+  ratingSegment: {
+    height: '100%',
+  },
+  ratingLegend: {
+    gap: spacing.sm,
+  },
+  ratingItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  ratingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  ratingText: {
+    color: palette.text,
+    fontSize: 13,
+  },
+
+  // Analyst Actions
+  actionCard: {
+    backgroundColor: palette.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  actionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  actionFirm: {
+    color: palette.text,
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
+  },
+  actionBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  actionBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  actionDetails: {
+    marginBottom: 6,
+  },
+  actionGrade: {
+    color: palette.text,
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  actionTarget: {
+    color: palette.mutedText,
+    fontSize: 12,
+  },
+  actionDate: {
+    color: palette.mutedText,
+    fontSize: 11,
+  },
+
+  // SEC Filings
+  filingCard: {
+    backgroundColor: palette.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  filingHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  filingType: {
+    backgroundColor: palette.accentBg,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  filingTypeText: {
+    color: palette.accent,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  filingDate: {
+    color: palette.mutedText,
+    fontSize: 11,
+  },
+  filingTitle: {
+    color: palette.text,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+
+  // Index Trend
+  indexCard: {
+    backgroundColor: palette.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: spacing.md,
+  },
+  indexSymbol: {
+    color: palette.accent,
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: spacing.md,
+    textAlign: 'center',
+  },
+  indexGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
+  },
+  indexItem: {
+    width: '30%',
+    alignItems: 'center',
+    padding: spacing.sm,
+    backgroundColor: palette.surfaceHighlight,
+    borderRadius: 8,
+  },
+  indexPeriod: {
+    color: palette.mutedText,
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+  },
+  indexGrowth: {
+    color: palette.success,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+
+  // Net Share Purchase Activity
+  netShareCard: {
+    backgroundColor: palette.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: spacing.md,
+  },
+  netShareRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  netShareCol: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  netShareDivider: {
+    width: 1,
+    backgroundColor: palette.border,
+    marginHorizontal: spacing.sm,
+  },
+  netShareLabel: {
+    color: palette.mutedText,
+    fontSize: 12,
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    fontWeight: '600',
+  },
+  netShareValue: {
+    fontSize: 24,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  netShareShares: {
+    color: palette.text,
+    fontSize: 13,
+    marginBottom: 2,
+  },
+  netSharePercent: {
+    color: palette.mutedText,
+    fontSize: 11,
+  },
+  netShareFooter: {
+    borderTopWidth: 1,
+    borderTopColor: palette.border,
+    paddingTop: spacing.sm,
+    alignItems: 'center',
+  },
+  netShareFooterText: {
+    color: palette.mutedText,
+    fontSize: 12,
   },
 });

@@ -98,8 +98,8 @@ export const HomeScreen = () => {
           />
 
           <FeatureCard
-            title="Financial Metrics"
-            description="Deep dive into P/E, EPS, and Cap data."
+            title="Market News"
+            description="Stay updated with the latest market headlines."
             icon={BarChart3}
             iconColor={palette.success} // Emerald
             bgTint="rgba(16, 185, 129, 0.1)"

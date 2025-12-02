@@ -6,14 +6,18 @@ export const palette = {
   background: '#09090B', 
   surface: '#18181B',    
   surfaceHighlight: '#27272A', 
+  surfaceLight: '#3F3F46',
   
   primary: '#FFFFFF',    
   secondary: '#A1A1AA',  
   accent: '#2563EB',   
+  accentBg: 'rgba(37, 99, 235, 0.1)',
   
   success: '#10B981',    
+  successBg: 'rgba(16, 185, 129, 0.1)',
   warning: '#F59E0B',    
   danger: '#EF4444',     
+  dangerBg: 'rgba(239, 68, 68, 0.1)',
   error: '#EF4444',      
 
   text: '#FAFAFA',      

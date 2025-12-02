@@ -133,6 +133,7 @@ class FinanceApiService {
   // =========================================================================
   // 2. GET STOCK QUOTE
   // Endpoint: /v1/markets/quote (Mboum Finance API)
+  // Note: Also fetches from v1/markets/stock/modules?module=statistics for additional session data
   // =========================================================================
   async getStockQuote(symbol: string): Promise<StockQuote | null> {
     await this.ensureInitialized();
@@ -145,12 +146,15 @@ class FinanceApiService {
         return cached;
       }
 
-      // 2. Fetch API
-      console.log('📊 Fetching Quote...');
-      const url = `${this.baseURL}/v1/markets/quote?symbol=${symbol}&type=STOCKS`;
+      // 2. Fetch API - Get quote and today's history for session stats
+      console.log('📊 Fetching Quote and Today Session Data...');
       
-      const response = await fetch(url, { method: 'GET', headers: this.headers });
-      const data = await response.json();
+      const quoteResponse = await fetch(`${this.baseURL}/v1/markets/quote?symbol=${symbol}&type=STOCKS`, { 
+        method: 'GET', 
+        headers: this.headers 
+      });
+      
+      const data = await quoteResponse.json();
 
       // Check for rate limit
       if (data.message && data.message.includes('rate limit')) {
@@ -158,34 +162,122 @@ class FinanceApiService {
         throw new Error('Rate limit exceeded');
       }
 
-      // Data structure: { body: { symbol, companyName, primaryData: { lastSalePrice, netChange, percentageChange } } }
-      const result = data.body;
+      // Data structure can be:
+      // 1. Regular quote: { body: { symbol, primaryData: {...}, keyData: {...} } }
+      // 2. Real-time quotes: { body: [{ symbol, regularMarketPrice, ... }] }
+      let result = data.body;
+      
+      // Handle array response from real-time quotes
+      if (Array.isArray(result) && result.length > 0) {
+        result = result[0]; // Get first result
+      }
 
-      if (!result || !result.symbol) throw new Error('No quote data returned from API');
+      if (!result || (!result.symbol && !result.ticker)) throw new Error('No quote data returned from API');
 
+      // Parse different response formats
       const primaryData = result.primaryData || {};
-      const keyData = result.keyData || {};
+      const secondaryData = result.secondaryData || {};
+      const keyStats = result.keyStats || {};
+      
+      // Real-time quotes format uses direct fields
+      const directFields = result;
 
       // Parsing strings "$298.45" and "+1.83" to numbers
-      const price = this.parsePrice(primaryData.lastSalePrice || keyData.lastSalePrice || '0');
-      const change = this.parsePrice(primaryData.netChange || keyData.netChange || '0');
-      const changePercent = this.parsePercent(primaryData.percentageChange || keyData.percentageChange || '0');
+      const price = this.parsePrice(
+        primaryData.lastSalePrice || 
+        secondaryData.lastSalePrice ||
+        directFields.regularMarketPrice ||
+        directFields.price ||
+        '0'
+      );
+      const change = this.parsePrice(
+        primaryData.netChange || 
+        secondaryData.netChange ||
+        directFields.regularMarketChange ||
+        directFields.change ||
+        '0'
+      );
+      const changePercent = this.parsePercent(
+        primaryData.percentageChange || 
+        secondaryData.percentageChange ||
+        directFields.regularMarketChangePercent ||
+        directFields.changePercent ||
+        '0'
+      );
+      
+      // Parse 52-week range from keyStats (format: "169.21 - 283.42")
+      let weekHigh52 = price;
+      let weekLow52 = price;
+      if (keyStats.fiftyTwoWeekHighLow?.value) {
+        const range = keyStats.fiftyTwoWeekHighLow.value.split(' - ');
+        if (range.length === 2) {
+          weekLow52 = parseFloat(range[0]);
+          weekHigh52 = parseFloat(range[1]);
+        }
+      }
       
       // Calculate previous close if not provided
       const prevClose = price - change;
 
+      // Try to get today's session data (open, high, low) from history
+      let todayOpen = prevClose;
+      let todayHigh = price;
+      let todayLow = price;
+      
+      try {
+        const historyUrl = `${this.baseURL}/v1/markets/stock/history?symbol=${symbol}&interval=1d&diffandsplits=false`;
+        const historyResponse = await fetch(historyUrl, { method: 'GET', headers: this.headers });
+        const historyData = await historyResponse.json();
+        
+        if (historyData.body && typeof historyData.body === 'object') {
+          // Get the last entry (today or latest available)
+          const entries = Object.entries(historyData.body);
+          if (entries.length >= 1) {
+            const latestEntry: any = entries[entries.length - 1][1];
+            todayOpen = this.parsePrice(latestEntry.open || todayOpen);
+            todayHigh = this.parsePrice(latestEntry.high || todayHigh);
+            todayLow = this.parsePrice(latestEntry.low || todayLow);
+          }
+        }
+      } catch (err) {
+        console.log('⚠️ Could not fetch today session data, using estimates');
+      }
+
+      // Build stock quote with comprehensive fallbacks
       const stockQuote: StockQuote = {
-        symbol: result.symbol,
+        symbol: result.symbol || result.ticker || symbol,
         price: price,
         change: change,
         changePercent: changePercent,
-        volume: parseInt((keyData.volume || keyData.lastTradeVolume || '0').toString().replace(/,/g, '')),
-        high: this.parsePrice(keyData.high || keyData.dayHigh || price),
-        low: this.parsePrice(keyData.low || keyData.dayLow || price),
-        open: this.parsePrice(keyData.open || price),
-        previousClose: this.parsePrice(keyData.previousClose || prevClose),
+        // Volume is in primaryData (with commas: "295,468")
+        volume: parseInt((
+          primaryData.volume || 
+          secondaryData.volume ||
+          directFields.regularMarketVolume ||
+          directFields.volume ||
+          '0'
+        ).toString().replace(/,/g, '')),
+        // Session data from history endpoint
+        high: todayHigh,
+        low: todayLow,
+        open: todayOpen,
+        previousClose: this.parsePrice(
+          secondaryData.lastSalePrice || 
+          directFields.regularMarketPreviousClose ||
+          directFields.previousClose ||
+          prevClose
+        ),
         timestamp: new Date().toISOString(),
       };
+
+      console.log('📊 Quote data:', {
+        price: stockQuote.price,
+        volume: stockQuote.volume,
+        open: stockQuote.open,
+        high: stockQuote.high,
+        low: stockQuote.low,
+        previousClose: stockQuote.previousClose,
+      });
 
       // 3. Save to SQLite
       await databaseService.saveStockQuote(stockQuote);
@@ -268,7 +360,7 @@ class FinanceApiService {
 
   // =========================================================================
   // 4. GET FINANCIAL METRICS
-  // Endpoint: /v1/markets/quote (Mboum Finance API) - extracts financial metrics
+  // Endpoint: /v1/markets/stock/modules (Mboum Finance API) - uses statistics and financial-data modules
   // =========================================================================
   async getFinancialMetrics(symbol: string): Promise<FinancialMetrics | null> {
     await this.ensureInitialized();
@@ -280,39 +372,95 @@ class FinanceApiService {
         return cached;
       }
 
-      console.log('📈 Fetching Metrics...');
-      const url = `${this.baseURL}/v1/markets/quote?symbol=${symbol}&type=STOCKS`;
-      const response = await fetch(url, { method: 'GET', headers: this.headers });
-      const data = await response.json();
+      console.log('📈 Fetching Metrics from stock/modules...');
+      
+      // Fetch both statistics and financial-data modules in parallel
+      const [statisticsData, financialData] = await Promise.all([
+        this.getStockModule(symbol, 'statistics'),
+        this.getStockModule(symbol, 'financial-data')
+      ]);
+      
+      // Log what we received for debugging
+      console.log('📊 Statistics module keys:', statisticsData ? Object.keys(statisticsData).slice(0, 10) : 'null');
+      console.log('📊 Financial-data module keys:', financialData ? Object.keys(financialData).slice(0, 10) : 'null');
       
       // Check for rate limit
-      if (data.message && data.message.includes('rate limit')) {
-        console.warn('⚠️ Rate limit hit - using cache');
-        throw new Error('Rate limit exceeded');
+      if (!statisticsData && !financialData) {
+        console.warn('⚠️ Both modules returned null - possibly rate limit or no data');
+        throw new Error('No metrics data available');
       }
 
-      const result = data.body;
-      const keyData = result?.keyData || {};
-
-      if (!result || !result.symbol) throw new Error('No metrics data');
-
+      // Merge data from both modules - using ACTUAL field names from API
       const metrics: FinancialMetrics = {
         symbol: symbol,
-        marketCap: this.parsePrice(keyData.marketCap || keyData.marketCapitalization || '0'),
-        peRatio: keyData.peRatio ? parseFloat(keyData.peRatio) : undefined,
-        dividendYield: keyData.dividendYield ? parseFloat(keyData.dividendYield) : undefined,
-        eps: keyData.eps || keyData.earningsPerShare ? parseFloat(keyData.eps || keyData.earningsPerShare) : undefined,
-        weekHigh52: keyData.fiftyTwoWeekHigh ? this.parsePrice(keyData.fiftyTwoWeekHigh) : undefined,
-        weekLow52: keyData.fiftyTwoWeekLow ? this.parsePrice(keyData.fiftyTwoWeekLow) : undefined,
+        // Market Cap: Calculate from enterprise value or use sharesOutstanding * price
+        marketCap: statisticsData?.enterpriseValue?.raw ||
+                   (statisticsData?.sharesOutstanding?.raw && financialData?.currentPrice?.raw ? 
+                     statisticsData.sharesOutstanding.raw * financialData.currentPrice.raw : undefined),
+        // P/E Ratio: from statistics module (forwardPE is available, trailingPE not directly available)
+        peRatio: statisticsData?.forwardPE?.raw || undefined,
+        // Dividend Yield: Calculate from lastDividendValue and currentPrice
+        dividendYield: (statisticsData?.lastDividendValue?.raw && financialData?.currentPrice?.raw) ?
+          (statisticsData.lastDividendValue.raw / financialData.currentPrice.raw) * 100 * 4 : // Annualize (quarterly * 4)
+          undefined,
+        // EPS: from statistics module
+        eps: statisticsData?.trailingEps?.raw || 
+             statisticsData?.forwardEps?.raw || 
+             undefined,
+        // Beta: from statistics module
+        beta: statisticsData?.beta?.raw || undefined,
+        // 52-Week High/Low: NOT directly available, will need to get from quote endpoint
+        weekHigh52: undefined, // Will be filled from quote data
+        weekLow52: undefined,  // Will be filled from quote data
+        // Average Volume: NOT available in these modules
+        averageVolume: undefined,
       };
 
-      await databaseService.saveFinancialMetrics(metrics);
-      console.log('✅ Metrics saved to SQLite');
+      // Get 52-week high/low from quote endpoint (it has keyStats.fiftyTwoWeekHighLow)
+      try {
+        const quoteUrl = `${this.baseURL}/v1/markets/quote?symbol=${symbol}&type=STOCKS`;
+        const quoteResponse = await fetch(quoteUrl, { method: 'GET', headers: this.headers });
+        const quoteData = await quoteResponse.json();
+        
+        if (quoteData.body?.keyStats?.fiftyTwoWeekHighLow?.value) {
+          const range = quoteData.body.keyStats.fiftyTwoWeekHighLow.value.split(' - ');
+          if (range.length === 2) {
+            metrics.weekLow52 = parseFloat(range[0]);
+            metrics.weekHigh52 = parseFloat(range[1]);
+          }
+        }
+      } catch (err) {
+        console.log('⚠️ Could not fetch 52-week range from quote');
+      }
 
-      return metrics;
+      // Log the parsed metrics
+      console.log('📊 Parsed metrics:', {
+        marketCap: metrics.marketCap,
+        peRatio: metrics.peRatio,
+        eps: metrics.eps,
+        dividendYield: metrics.dividendYield,
+        beta: metrics.beta,
+        weekHigh52: metrics.weekHigh52,
+        weekLow52: metrics.weekLow52,
+      });
+
+      // If we have at least some data, save and return
+      if (metrics.marketCap || metrics.peRatio || metrics.eps) {
+        await databaseService.saveFinancialMetrics(metrics);
+        console.log('✅ Metrics saved to SQLite with data from stock/modules');
+        return metrics;
+      }
+      
+      throw new Error('No valid metrics data found');
     } catch (error) {
       console.warn('Error fetching metrics:', error);
-      return await databaseService.getFinancialMetrics(symbol, Infinity);
+      // Fallback to old cached data
+      const fallback = await databaseService.getFinancialMetrics(symbol, Infinity);
+      if (fallback) {
+        console.log('⚠️ Using old cached metrics as fallback');
+        return fallback;
+      }
+      return null;
     }
   }
 
