@@ -1,26 +1,92 @@
-import React from 'react';
-import { StyleSheet, Text, View, ScrollView } from 'react-native';
+import React, { useEffect, useState } from 'react';
 import { 
-  BarChart4, 
-  TrendingUp, 
-  PieChart, 
-  Construction, 
-  Lock, 
-  ArrowRight 
+  StyleSheet, 
+  Text, 
+  View, 
+  ScrollView, 
+  ActivityIndicator, 
+  TouchableOpacity,
+  Linking 
+} from 'react-native';
+import { 
+  Newspaper, 
+  Calendar, 
+  ExternalLink,
+  TrendingUp,
+  AlertCircle,
+  Clock
 } from 'lucide-react-native';
 import { ScreenShell } from '@/components';
 import { palette, spacing, layout } from '@/theme';
+import { financeApiService } from '@/services/financeApiService';
+import type { NewsArticle, EarningsEvent } from '@/types';
 
 export const StatisticsScreen = () => {
-  
-  const FeatureItem = ({ label, icon: Icon, color }: { label: string, icon: any, color: string }) => (
-    <View style={styles.featureRow}>
-      <View style={[styles.iconBox, { backgroundColor: `${color}15` }]}>
-        <Icon size={18} color={color} strokeWidth={1.5} />
+  const [loading, setLoading] = useState(true);
+  const [news, setNews] = useState<NewsArticle[]>([]);
+  const [earnings, setEarnings] = useState<EarningsEvent[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadMarketData();
+  }, []);
+
+  const loadMarketData = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [newsData, earningsData] = await Promise.all([
+        financeApiService.getMarketNews('AAPL,TSLA,GOOGL,MSFT,AMZN'),
+        financeApiService.getEarningsCalendar(),
+      ]);
+      
+      setNews(newsData.slice(0, 10)); // Limit to 10 articles
+      setEarnings(earningsData.slice(0, 15)); // Limit to 15 events
+    } catch (err) {
+      console.error('Error loading market data:', err);
+      setError('Failed to load market data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openNewsUrl = (url: string) => {
+    if (url) {
+      Linking.openURL(url).catch(err => console.warn('Failed to open URL:', err));
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    } catch {
+      return dateString;
+    }
+  };
+
+  const formatDateTime = (dateString: string) => {
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return dateString;
+    }
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={palette.accent} />
+        <Text style={styles.loadingText}>Loading market insights...</Text>
       </View>
-      <Text style={styles.featureText}>{label}</Text>
-    </View>
-  );
+    );
+  }
 
   return (
     <ScreenShell>
@@ -28,58 +94,127 @@ export const StatisticsScreen = () => {
         
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Market Analytics</Text>
-          <View style={styles.badge}>
-            <Construction size={12} color={palette.warning} />
-            <Text style={styles.badgeText}>IN DEVELOPMENT</Text>
-          </View>
+          <Text style={styles.title}>Market Insights</Text>
+          <Text style={styles.subtitle}>Latest news and earnings calendar</Text>
         </View>
 
-        {/* Main Placeholder Card */}
-        <View style={styles.mainCard}>
-          <View style={styles.illustrationContainer}>
-            <View style={styles.circleOuter}>
-              <View style={styles.circleInner}>
-                <BarChart4 size={48} color={palette.accent} strokeWidth={1} />
-              </View>
+        {error && (
+          <View style={styles.errorContainer}>
+            <AlertCircle size={16} color={palette.danger} />
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
+
+        {/* Earnings Calendar Section */}
+        {earnings.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionTitleRow}>
+              <Calendar size={18} color={palette.accent} />
+              <Text style={styles.sectionTitle}>Earnings Calendar</Text>
             </View>
+            
+            {earnings.map((event, index) => (
+              <View key={`${event.symbol}-${index}`} style={styles.earningsCard}>
+                <View style={styles.earningsHeader}>
+                  <View style={styles.symbolBadge}>
+                    <Text style={styles.symbolText}>{event.symbol}</Text>
+                  </View>
+                  <View style={styles.dateContainer}>
+                    <Clock size={12} color={palette.mutedText} />
+                    <Text style={styles.dateText}>
+                      {event.date ? formatDate(event.date) : 'TBA'}
+                      {event.time && ` • ${event.time}`}
+                    </Text>
+                  </View>
+                </View>
+                
+                {event.companyName && (
+                  <Text style={styles.companyName} numberOfLines={1}>
+                    {event.companyName}
+                  </Text>
+                )}
+                
+                {(event.epsEstimate || event.epsActual || event.revenueEstimate || event.revenueActual) && (
+                  <View style={styles.earningsMetrics}>
+                    {event.epsEstimate && (
+                      <View style={styles.metricItem}>
+                        <Text style={styles.metricLabel}>EPS Est.</Text>
+                        <Text style={styles.metricValue}>${event.epsEstimate.toFixed(2)}</Text>
+                      </View>
+                    )}
+                    {event.epsActual && (
+                      <View style={styles.metricItem}>
+                        <Text style={styles.metricLabel}>EPS Act.</Text>
+                        <Text style={[styles.metricValue, styles.actualValue]}>
+                          ${event.epsActual.toFixed(2)}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                )}
+              </View>
+            ))}
           </View>
-          
-          <Text style={styles.cardTitle}>Advanced Terminal Offline</Text>
-          <Text style={styles.cardDesc}>
-            We are currently compiling high-frequency trading algorithms and global market indices for this module.
-          </Text>
+        )}
 
-          <View style={styles.lockedContainer}>
-            <Lock size={14} color={palette.mutedText} />
-            <Text style={styles.lockedText}>Module Locked • v2.0 Update</Text>
+        {/* Market News Section */}
+        {news.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionTitleRow}>
+              <Newspaper size={18} color={palette.primary} />
+              <Text style={styles.sectionTitle}>Latest News</Text>
+            </View>
+            
+            {news.map((article, index) => (
+              <TouchableOpacity 
+                key={index} 
+                style={styles.newsCard}
+                onPress={() => openNewsUrl(article.url)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.newsHeader}>
+                  <Text style={styles.newsTitle} numberOfLines={2}>
+                    {article.title}
+                  </Text>
+                  <ExternalLink size={16} color={palette.mutedText} />
+                </View>
+                
+                {article.summary && (
+                  <Text style={styles.newsSummary} numberOfLines={3}>
+                    {article.summary}
+                  </Text>
+                )}
+                
+                <View style={styles.newsFooter}>
+                  {article.source && (
+                    <Text style={styles.newsSource}>{article.source}</Text>
+                  )}
+                  {article.publishedAt && (
+                    <Text style={styles.newsDate}>{formatDateTime(article.publishedAt)}</Text>
+                  )}
+                </View>
+                
+                {article.tickers && article.tickers.length > 0 && (
+                  <View style={styles.tickerContainer}>
+                    {article.tickers.slice(0, 5).map((ticker, i) => (
+                      <View key={i} style={styles.tickerBadge}>
+                        <Text style={styles.tickerText}>{ticker}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </TouchableOpacity>
+            ))}
           </View>
-        </View>
+        )}
 
-        {/* Roadmap Section */}
-        <View style={styles.roadmapContainer}>
-          <Text style={styles.sectionHeader}>UPCOMING CAPABILITIES</Text>
-          
-          <View style={styles.roadmapCard}>
-            <FeatureItem 
-              label="Real-time Sector Heatmaps" 
-              icon={PieChart} 
-              color={palette.primary} 
-            />
-            <View style={styles.divider} />
-            <FeatureItem 
-              label="Portfolio Performance Attribution" 
-              icon={TrendingUp} 
-              color={palette.success} 
-            />
-            <View style={styles.divider} />
-            <FeatureItem 
-              label="Global Indices & Macro Trends" 
-              icon={BarChart4} 
-              color={palette.accent} 
-            />
+        {!loading && news.length === 0 && earnings.length === 0 && (
+          <View style={styles.emptyState}>
+            <AlertCircle size={48} color={palette.mutedText} />
+            <Text style={styles.emptyText}>No market data available</Text>
+            <Text style={styles.emptySubtext}>Please try again later</Text>
           </View>
-        </View>
+        )}
 
       </ScrollView>
     </ScreenShell>
@@ -87,6 +222,17 @@ export const StatisticsScreen = () => {
 };
 
 const styles = StyleSheet.create({
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: palette.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: palette.mutedText,
+    marginTop: spacing.md,
+    fontSize: 14,
+  },
   content: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.xl,
@@ -102,133 +248,186 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '700',
     letterSpacing: -0.5,
-    marginBottom: spacing.sm,
+    marginBottom: spacing.xs,
   },
-  badge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
-  },
-  badgeText: {
-    color: palette.warning,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1,
+  subtitle: {
+    color: palette.mutedText,
+    fontSize: 14,
   },
 
-  mainCard: {
-    backgroundColor: palette.surface,
+  // Error State
+  errorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    padding: spacing.md,
     borderRadius: layout.borderRadius,
-    padding: spacing.xl,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: palette.border,
-    marginBottom: spacing.xl,
-  },
-  illustrationContainer: {
     marginBottom: spacing.lg,
+    gap: spacing.sm,
   },
-  circleOuter: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: palette.surfaceHighlight,
-    justifyContent: 'center',
+  errorText: {
+    color: palette.danger,
+    fontSize: 14,
+    flex: 1,
+  },
+
+  // Empty State
+  emptyState: {
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: palette.border,
-  },
-  circleInner: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: palette.background,
     justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: palette.surfaceHighlight,
-    shadowColor: palette.accent,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.1,
-    shadowRadius: 20,
+    paddingVertical: spacing.xxl * 2,
   },
-  cardTitle: {
+  emptyText: {
     color: palette.text,
     fontSize: 18,
     fontWeight: '600',
-    marginBottom: spacing.sm,
-    textAlign: 'center',
+    marginTop: spacing.lg,
   },
-  cardDesc: {
+  emptySubtext: {
     color: palette.mutedText,
     fontSize: 14,
-    textAlign: 'center',
-    lineHeight: 22,
-    marginBottom: spacing.lg,
-  },
-  lockedContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: palette.surfaceHighlight,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 100,
-  },
-  lockedText: {
-    color: palette.mutedText,
-    fontSize: 11,
-    fontWeight: '500',
+    marginTop: spacing.xs,
   },
 
-  // Roadmap
-  roadmapContainer: {
-    marginTop: spacing.sm,
+  // Sections
+  section: {
+    marginBottom: spacing.xl,
   },
-  sectionHeader: {
-    color: palette.mutedText,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1.5,
-    marginBottom: spacing.md,
-    marginLeft: 4,
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.lg,
   },
-  roadmapCard: {
+  sectionTitle: {
+    color: palette.text,
+    fontSize: 18,
+    fontWeight: '600',
+  },
+
+  // Earnings Cards
+  earningsCard: {
     backgroundColor: palette.surface,
     borderRadius: layout.borderRadius,
     borderWidth: 1,
     borderColor: palette.border,
     padding: spacing.md,
+    marginBottom: spacing.md,
   },
-  featureRow: {
+  earningsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  symbolBadge: {
+    backgroundColor: palette.surfaceHighlight,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  symbolText: {
+    color: palette.text,
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  dateContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 4,
+    gap: 4,
   },
-  iconBox: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: spacing.md,
+  dateText: {
+    color: palette.mutedText,
+    fontSize: 12,
   },
-  featureText: {
+  companyName: {
     color: palette.text,
     fontSize: 14,
     fontWeight: '500',
+    marginBottom: spacing.sm,
   },
-  divider: {
-    height: 1,
+  earningsMetrics: {
+    flexDirection: 'row',
+    gap: spacing.lg,
+  },
+  metricItem: {
+    flex: 1,
+  },
+  metricLabel: {
+    color: palette.mutedText,
+    fontSize: 11,
+    marginBottom: 2,
+  },
+  metricValue: {
+    color: palette.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  actualValue: {
+    color: palette.accent,
+  },
+
+  // News Cards
+  newsCard: {
+    backgroundColor: palette.surface,
+    borderRadius: layout.borderRadius,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  newsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  newsTitle: {
+    color: palette.text,
+    fontSize: 15,
+    fontWeight: '600',
+    lineHeight: 20,
+    flex: 1,
+  },
+  newsSummary: {
+    color: palette.mutedText,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: spacing.sm,
+  },
+  newsFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  newsSource: {
+    color: palette.accent,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  newsDate: {
+    color: palette.mutedText,
+    fontSize: 11,
+  },
+  tickerContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: spacing.xs,
+  },
+  tickerBadge: {
     backgroundColor: palette.surfaceHighlight,
-    marginVertical: spacing.sm,
-    marginLeft: 48, 
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  tickerText: {
+    color: palette.mutedText,
+    fontSize: 10,
+    fontWeight: '600',
   },
 });

@@ -57,3 +57,24 @@ export interface WatchlistItem {
   name: string;
   addedAt?: string;
 }
+
+export interface NewsArticle {
+  title: string;
+  url: string;
+  source?: string;
+  publishedAt?: string;
+  summary?: string;
+  image?: string;
+  tickers?: string[];
+}
+
+export interface EarningsEvent {
+  symbol: string;
+  companyName?: string;
+  date: string;
+  time?: string;
+  epsEstimate?: number;
+  epsActual?: number;
+  revenueEstimate?: number;
+  revenueActual?: number;
+}

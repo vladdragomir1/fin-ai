@@ -562,6 +562,33 @@ class FinanceApiService {
   }
 
   // =========================================================================
+  // 6B. GET EARNINGS CALENDAR
+  // Endpoint: /v1/markets/calendar/earnings (Mboum Finance API)
+  // =========================================================================
+  async getEarningsCalendar(): Promise<any[]> {
+    try {
+      console.log('📅 Fetching Earnings Calendar...');
+      const url = `${this.baseURL}/v1/markets/calendar/earnings`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+
+      // Data structure: { body: [...] }
+      const earnings = data.body || [];
+
+      if (!Array.isArray(earnings)) {
+        return [];
+      }
+
+      console.log(`✅ Fetched ${earnings.length} earnings events`);
+      return earnings;
+    } catch (error) {
+      console.warn('❌ Error fetching earnings calendar:', error);
+      return [];
+    }
+  }
+
+  // =========================================================================
   // 7. GET STOCK MODULES (Statistics, Financial Data, etc.)
   // Endpoint: /v1/markets/stock/modules (Mboum Finance API)
   // Available modules: asset-profile, statistics, financial-data, 
@@ -584,7 +611,7 @@ class FinanceApiService {
       console.log(`✅ Fetched ${module} data`);
       return data.body || null;
     } catch (error) {
-      console.warn(`❌ Error fetching ${module}:`, error);
+      console.warn(`Error fetching ${module}:`, error);
       return null;
     }
   }

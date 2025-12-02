@@ -101,18 +101,63 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
   const loadCompanyData = async () => {
     setLoading(true);
     try {
-      // Parallel Fetch: Get Quote, Overview, Metrics AND Chart data
-      const [quoteData, overviewData, metricsData, historicalData] = await Promise.all([
+      // Parallel Fetch: Get Quote, Overview, Metrics, Chart AND ALL Module data
+      const [
+        quoteData, 
+        overviewData, 
+        metricsData, 
+        historicalData,
+        statisticsData,
+        financialData,
+        incomeStatement,
+        balanceSheet,
+        cashflowStatement
+      ] = await Promise.all([
         financeApiService.getStockQuote(symbol),
         financeApiService.getCompanyOverview(symbol),
         financeApiService.getFinancialMetrics(symbol),
         financeApiService.getHistoricalData(symbol, selectedRange),
+        financeApiService.getStockStatistics(symbol),
+        financeApiService.getFinancialData(symbol),
+        financeApiService.getIncomeStatement(symbol),
+        financeApiService.getBalanceSheet(symbol),
+        financeApiService.getCashflowStatement(symbol),
       ]);
 
       setQuote(quoteData);
       setOverview(overviewData);
-      setMetrics(metricsData);
+      
+      // Enhance metrics with comprehensive module data
+      if (metricsData) {
+        // Merge statistics data into metrics
+        if (statisticsData) {
+          metricsData.beta = statisticsData.beta || metricsData.beta;
+          metricsData.averageVolume = statisticsData.averageVolume || metricsData.averageVolume;
+        }
+        
+        // Merge financial data
+        if (financialData) {
+          metricsData.marketCap = financialData.marketCap || metricsData.marketCap;
+          metricsData.peRatio = financialData.trailingPE || metricsData.peRatio;
+          metricsData.dividendYield = financialData.dividendYield || metricsData.dividendYield;
+        }
+        
+        setMetrics(metricsData);
+      }
+      
       setChartData(historicalData);
+      
+      // Log comprehensive data for debugging
+      console.log('📊 Loaded comprehensive company data:', {
+        hasQuote: !!quoteData,
+        hasOverview: !!overviewData,
+        hasMetrics: !!metricsData,
+        hasStatistics: !!statisticsData,
+        hasFinancialData: !!financialData,
+        hasIncomeStatement: !!incomeStatement,
+        hasBalanceSheet: !!balanceSheet,
+        hasCashflow: !!cashflowStatement,
+      });
       
     } catch (error) {
       console.error('Error loading company data:', error);
