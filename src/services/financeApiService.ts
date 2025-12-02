@@ -13,12 +13,31 @@ class FinanceApiService {
   private initialized = false;
   // Ensure we use https
   private baseURL = `https://${FINANCIAL_API_HOST}`;
+  
+  // Rate limiting
+  private lastRequestTime = 0;
+  private readonly MIN_REQUEST_INTERVAL = 250; // 250ms between requests (max 4 requests/second) - increased to prevent 429 errors
 
   private get headers() {
     return {
       'X-RapidAPI-Key': FINANCIAL_API_KEY,
       'X-RapidAPI-Host': FINANCIAL_API_HOST,
     };
+  }
+
+  // Helper: Add delay between requests to prevent rate limiting
+  private async throttleRequest(): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    
+    if (timeSinceLastRequest < this.MIN_REQUEST_INTERVAL) {
+      const delay = this.MIN_REQUEST_INTERVAL - timeSinceLastRequest;
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delay);
+      });
+    }
+    
+    this.lastRequestTime = Date.now();
   }
 
   // --- HELPER: Clean strings like "$157.30" -> 157.30 ---
@@ -68,6 +87,7 @@ class FinanceApiService {
       }
 
       // 2. Use v1/markets/search endpoint (note: "markets" plural)
+      await this.throttleRequest();
       console.log(`🔍 Searching API for "${query}"...`);
       
       const url = `${this.baseURL}/v1/markets/search?search=${encodeURIComponent(query)}`;
@@ -147,6 +167,7 @@ class FinanceApiService {
       }
 
       // 2. Fetch API - Get quote and today's history for session stats
+      await this.throttleRequest();
       console.log('📊 Fetching Quote and Today Session Data...');
       
       const quoteResponse = await fetch(`${this.baseURL}/v1/markets/quote?symbol=${symbol}&type=STOCKS`, { 
@@ -225,6 +246,7 @@ class FinanceApiService {
       let todayLow = price;
       
       try {
+        await this.throttleRequest();
         const historyUrl = `${this.baseURL}/v1/markets/stock/history?symbol=${symbol}&interval=1d&diffandsplits=false`;
         const historyResponse = await fetch(historyUrl, { method: 'GET', headers: this.headers });
         const historyData = await historyResponse.json();
@@ -467,40 +489,46 @@ class FinanceApiService {
   // =========================================================================
   // 5. GET HISTORICAL DATA (CHARTS)
   // Endpoint: /v1/markets/stock/history (Mboum Finance API)
+  // Supports intraday intervals: 1m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo
   // =========================================================================
   async getHistoricalData(symbol: string, range: string = '1Y'): Promise<any[]> {
     await this.ensureInitialized();
 
     try {
-      // 1. Try SQLite Cache
-      let cached: any[] | null = null;
-      try {
-        cached = await databaseService.getHistoricalData(symbol, range);
-      } catch (dbErr) {
-        console.warn('SQLite historical read failed', dbErr);
-      }
-
-      if (cached) {
-        console.log('✅ Using cached historical data from SQLite');
-        return cached;
-      }
-
-      // 2. Try AsyncStorage Cache
-      try {
-        const asCached = await offlineDataService.getCachedChartData(symbol, range);
-        if (asCached) {
-          console.log('✅ Using cached historical data from AsyncStorage');
-          return asCached;
+      // 1. Try SQLite Cache (skip for intraday - too volatile)
+      const isIntraday = range === '1D';
+      
+      if (!isIntraday) {
+        let cached: any[] | null = null;
+        try {
+          cached = await databaseService.getHistoricalData(symbol, range);
+        } catch (dbErr) {
+          console.warn('SQLite historical read failed', dbErr);
         }
-      } catch (asErr) {
-        console.warn('AsyncStorage historical read failed', asErr);
+
+        if (cached) {
+          console.log('✅ Using cached historical data from SQLite');
+          return cached;
+        }
+
+        // 2. Try AsyncStorage Cache
+        try {
+          const asCached = await offlineDataService.getCachedChartData(symbol, range);
+          if (asCached) {
+            console.log('✅ Using cached historical data from AsyncStorage');
+            return asCached;
+          }
+        } catch (asErr) {
+          console.warn('AsyncStorage historical read failed', asErr);
+        }
       }
 
       // 3. API Call
       console.log(`📈 Fetching Chart (${range})...`);
       
       let interval = '1d';
-      if (range === '1M') interval = '1d';
+      if (range === '1D') interval = '5m'; // Intraday: 5-minute intervals for current day
+      else if (range === '1M') interval = '1d';
       else if (range === '6M') interval = '1d';
       else if (range === '1Y') interval = '1d';
       else if (range === '5Y') interval = '1wk';
@@ -511,6 +539,7 @@ class FinanceApiService {
       // Log for debugging
       console.log('🔗 URL:', url);
       
+      await this.throttleRequest();
       const response = await fetch(url, { method: 'GET', headers: this.headers });
       const data = await response.json();
       console.log('📡 History response keys:', Object.keys(data));
@@ -683,67 +712,27 @@ class FinanceApiService {
   }
 
   // =========================================================================
-  // 6. GET MARKET NEWS
-  // Endpoint: /v1/markets/news (Mboum Finance API)
-  // =========================================================================
-  async getMarketNews(ticker: string = 'AAPL,TSLA'): Promise<any[]> {
-    try {
-      console.log('📰 Fetching Market News...');
-      const url = `${this.baseURL}/v1/markets/news?ticker=${encodeURIComponent(ticker)}`;
-      
-      const response = await fetch(url, { method: 'GET', headers: this.headers });
-      const data = await response.json();
-
-      // Data structure: { body: [...] }
-      const news = data.body || [];
-
-      if (!Array.isArray(news)) {
-        return [];
-      }
-
-      console.log(`✅ Fetched ${news.length} news articles`);
-      return news;
-    } catch (error) {
-      console.warn('❌ Error fetching market news:', error);
-      return [];
-    }
-  }
-
-  // =========================================================================
-  // 6B. GET EARNINGS CALENDAR
-  // Endpoint: /v1/markets/calendar/earnings (Mboum Finance API)
-  // =========================================================================
-  async getEarningsCalendar(): Promise<any[]> {
-    try {
-      console.log('📅 Fetching Earnings Calendar...');
-      const url = `${this.baseURL}/v1/markets/calendar/earnings`;
-      
-      const response = await fetch(url, { method: 'GET', headers: this.headers });
-      const data = await response.json();
-
-      // Data structure: { body: [...] }
-      const earnings = data.body || [];
-
-      if (!Array.isArray(earnings)) {
-        return [];
-      }
-
-      console.log(`✅ Fetched ${earnings.length} earnings events`);
-      return earnings;
-    } catch (error) {
-      console.warn('❌ Error fetching earnings calendar:', error);
-      return [];
-    }
-  }
-
-  // =========================================================================
   // 7. GET STOCK MODULES (Statistics, Financial Data, etc.)
   // Endpoint: /v1/markets/stock/modules (Mboum Finance API)
-  // Available modules: asset-profile, statistics, financial-data, 
-  //                    income-statement, balance-sheet, cashflow-statement
+  // Available modules: calendar-events, earnings-history, income-statement, 
+  //                    balance-sheet, cashflow-statement, institution-ownership,
+  //                    insider-holders, recommendation-trend, upgrade-downgrade-history,
+  //                    sec-filings, index-trend, net-share-purchase-activity
+  // Cache: 24 hours (refresh daily for accurate financial data)
   // =========================================================================
   async getStockModule(symbol: string, module: string): Promise<any> {
+    await this.ensureInitialized();
+
     try {
+      // 1. Check SQLite cache (24 hour expiration for fresh data)
+      const cached = await databaseService.getStockModule(symbol, module);
+      if (cached) {
+        console.log(`✅ Using cached ${module} from SQLite`);
+        return cached;
+      }
+
+      // 2. Fetch from API with rate limiting
+      await this.throttleRequest();
       console.log(`📊 Fetching ${module} for ${symbol}...`);
       const url = `${this.baseURL}/v1/markets/stock/modules?symbol=${symbol}&module=${module}`;
       
@@ -752,15 +741,171 @@ class FinanceApiService {
 
       // Check for rate limit
       if (data.message && data.message.includes('rate limit')) {
-        console.warn('⚠️ Rate limit hit');
-        return null;
+        console.warn(`⚠️ Rate limit hit for ${module} - using fallback`);
+        // 3. Fallback to old cache (ignore expiration)
+        const oldCached = await databaseService.getStockModule(symbol, module, Infinity);
+        if (oldCached) {
+          console.log(`⚠️ Using old cached ${module} as fallback`);
+          return oldCached;
+        }
+        // Don't cache null on rate limit - throw error to retry later
+        throw new Error('Rate limit - no cache available');
       }
 
-      console.log(`✅ Fetched ${module} data`);
-      return data.body || null;
+      const moduleData = data.body || null;
+      
+      // 4. Save to cache ONLY if data exists (don't cache null/empty responses)
+      if (moduleData && Object.keys(moduleData).length > 0) {
+        await databaseService.saveStockModule(symbol, module, moduleData);
+        console.log(`✅ Fetched and cached ${module} data`);
+      } else {
+        console.log(`⚠️ Module ${module} returned empty - not caching`);
+      }
+
+      return moduleData;
     } catch (error) {
       console.warn(`Error fetching ${module}:`, error);
+      // 5. Final fallback to old cache
+      const fallback = await databaseService.getStockModule(symbol, module, Infinity);
+      if (fallback) {
+        console.log(`⚠️ Using old cached ${module} due to error`);
+        return fallback;
+      }
       return null;
+    }
+  }
+
+  // =========================================================================
+  // 8. GET MARKET SCREENER (Day Gainers, Losers, Most Active, etc.)
+  // Endpoint: /v1/markets/screener (Mboum Finance API)
+  // Available lists: day_gainers, day_losers, most_actives, undervalued_large_caps
+  // Cache: 15 minutes (market data updates frequently during trading hours)
+  // =========================================================================
+  async getMarketScreener(list: string = 'day_gainers'): Promise<any[]> {
+    await this.ensureInitialized();
+
+    try {
+      // 1. Check cache (15 minute expiration for market data)
+      const cacheKey = `screener_${list}`;
+      const cached = await databaseService.getMarketData(cacheKey, 15 * 60 * 1000);
+      if (cached) {
+        console.log(`✅ Using cached ${list} from SQLite`);
+        return cached;
+      }
+
+      // 2. Fetch from API
+      console.log(`📊 Fetching ${list}...`);
+      const url = `${this.baseURL}/v1/markets/screener?list=${list}`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+
+      // Check for rate limit
+      if (data.message && data.message.includes('rate limit')) {
+        console.warn('⚠️ Rate limit hit');
+        // 3. Fallback to old cache
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) {
+          console.log(`⚠️ Using old cached ${list} as fallback`);
+          return oldCached;
+        }
+        return [];
+      }
+
+      // Data structure: { body: [...] }
+      const results = data.body || [];
+      
+      // 4. Save to cache
+      if (results.length > 0) {
+        await databaseService.saveMarketData(cacheKey, results);
+      }
+      
+      console.log(`✅ Fetched and cached ${results.length} results for ${list}`);
+      return results;
+    } catch (error) {
+      console.warn(`Error fetching ${list}:`, error);
+      // 5. Final fallback to old cache
+      const cacheKey = `screener_${list}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) {
+        console.log(`⚠️ Using old cached ${list} due to error`);
+        return fallback;
+      }
+      return [];
+    }
+  }
+
+  // Helper: Get day gainers specifically
+  async getMarketGainers(): Promise<any[]> {
+    return await this.getMarketScreener('day_gainers');
+  }
+
+  // Helper: Get day losers specifically
+  async getMarketLosers(): Promise<any[]> {
+    return await this.getMarketScreener('day_losers');
+  }
+
+  // Helper: Get most active stocks
+  async getMostActive(): Promise<any[]> {
+    return await this.getMarketScreener('most_actives');
+  }
+
+  // =========================================================================
+  // 9. GET MARKET TICKERS (Paginated list of stocks)
+  // Endpoint: /v2/markets/tickers (Mboum Finance API)
+  // Returns paginated list of stocks sorted by market cap
+  // Cache: 1 hour for ticker list data
+  // =========================================================================
+  async getMarketTickers(page: number = 1, type: string = 'STOCKS'): Promise<any> {
+    await this.ensureInitialized();
+
+    try {
+      const cacheKey = `tickers_${type}_page_${page}`;
+      
+      // 1. Check SQLite cache (1 hour expiration)
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log(`✅ Using cached tickers (page ${page}) from SQLite`);
+        return cached;
+      }
+
+      // 2. Fetch from API
+      console.log(`📊 Fetching market tickers page ${page}...`);
+      const url = `${this.baseURL}/v2/markets/tickers?type=${type}&page=${page}`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+
+      // Check for rate limit
+      if (data.message && data.message.includes('rate limit')) {
+        console.warn('⚠️ Rate limit hit');
+        // 3. Fallback to old cache
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) {
+          console.log(`⚠️ Using old cached tickers (page ${page}) as fallback`);
+          return oldCached;
+        }
+        return { meta: {}, body: [] };
+      }
+
+      // Data structure: { meta: { totalrecords, ... }, body: [...] }
+      // 4. Save to cache
+      if (data.body && data.body.length > 0) {
+        await databaseService.saveMarketData(cacheKey, data);
+      }
+      
+      console.log(`✅ Fetched and cached ${data.body?.length || 0} tickers (page ${page})`);
+      return data;
+    } catch (error) {
+      console.warn(`Error fetching market tickers:`, error);
+      // 5. Final fallback to old cache
+      const cacheKey = `tickers_${type}_page_${page}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) {
+        console.log(`⚠️ Using old cached tickers (page ${page}) due to error`);
+        return fallback;
+      }
+      return { meta: {}, body: [] };
     }
   }
 
@@ -787,6 +932,447 @@ class FinanceApiService {
   // Helper: Get cashflow statement
   async getCashflowStatement(symbol: string): Promise<any> {
     return await this.getStockModule(symbol, 'cashflow-statement');
+  }
+
+  // =========================================================================
+  // 10. GET MARKET NEWS (v2 with type filter)
+  // Endpoint: /v2/markets/news (Mboum Finance API)
+  // Returns comprehensive news articles with images, videos, and filtering
+  // Cache: 15 minutes for fresh news updates
+  // =========================================================================
+  async getMarketNews(ticker?: string, type: string = 'ALL'): Promise<any[]> {
+    await this.ensureInitialized();
+
+    try {
+      const cacheKey = ticker ? `news_v2_${ticker}_${type}` : `news_v2_ALL_${type}`;
+      
+      // 1. Check SQLite cache (15 minute expiration for fresh news)
+      const cached = await databaseService.getMarketData(cacheKey);
+      if (cached) {
+        console.log('✅ Using cached news from SQLite');
+        return cached;
+      }
+
+      // 2. Fetch from API
+      console.log(`📰 Fetching news (type: ${type})...`);
+      let url = `${this.baseURL}/v2/markets/news?type=${type}`;
+      if (ticker) {
+        url += `&ticker=${encodeURIComponent(ticker)}`;
+      }
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+
+      // Check for rate limit
+      if (data.message && data.message.includes('rate limit')) {
+        console.warn('⚠️ Rate limit hit');
+        // 3. Fallback to old cache
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) {
+          console.log('⚠️ Using old cached news as fallback');
+          return oldCached;
+        }
+        return [];
+      }
+
+      // Data structure: { meta: { total, ... }, body: [...] }
+      const news = data.body || [];
+      
+      // 4. Save to cache
+      if (news.length > 0) {
+        await databaseService.saveMarketData(cacheKey, news);
+      }
+      
+      console.log(`✅ Fetched and cached ${news.length} news articles`);
+      return news;
+    } catch (error) {
+      console.warn('Error fetching news:', error);
+      // 5. Final fallback to old cache
+      const cacheKey = ticker ? `news_v2_${ticker}_${type}` : `news_v2_ALL_${type}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) {
+        console.log('⚠️ Using old cached news due to error');
+        return fallback;
+      }
+      return [];
+    }
+  }
+
+  // =========================================================================
+  // 11. GET EARNINGS CALENDAR
+  // Endpoint: /v1/markets/calendar/earnings (Mboum Finance API)
+  // Returns upcoming earnings announcements
+  // Cache: 1 hour for calendar data
+  // =========================================================================
+  async getEarningsCalendar(): Promise<any[]> {
+    await this.ensureInitialized();
+
+    try {
+      const cacheKey = 'calendar_earnings';
+      
+      // 1. Check SQLite cache (1 hour expiration)
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log('✅ Using cached earnings calendar from SQLite');
+        return cached;
+      }
+
+      // 2. Fetch from API
+      console.log('📅 Fetching earnings calendar...');
+      const url = `${this.baseURL}/v1/markets/calendar/earnings`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+
+      // Check for rate limit
+      if (data.message && data.message.includes('rate limit')) {
+        console.warn('⚠️ Rate limit hit');
+        // 3. Fallback to old cache
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) {
+          console.log('⚠️ Using old cached earnings calendar as fallback');
+          return oldCached;
+        }
+        return [];
+      }
+
+      // Data structure: { meta: {...}, body: [...] }
+      const earnings = data.body || [];
+      
+      // 4. Save to cache
+      if (earnings.length > 0) {
+        await databaseService.saveMarketData(cacheKey, earnings);
+      }
+      
+      console.log(`✅ Fetched and cached ${earnings.length} earnings events`);
+      return earnings;
+    } catch (error) {
+      console.warn('Error fetching earnings calendar:', error);
+      // 5. Final fallback to old cache
+      const cacheKey = 'calendar_earnings';
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) {
+        console.log('⚠️ Using old cached earnings calendar due to error');
+        return fallback;
+      }
+      return [];
+    }
+  }
+
+  // =========================================================================
+  // 12. GET DIVIDENDS CALENDAR
+  // Endpoint: /v1/markets/calendar/dividends (Mboum Finance API)
+  // Returns upcoming dividend payments for a specific date
+  // Cache: 1 hour for calendar data
+  // =========================================================================
+  async getDividendsCalendar(date?: string): Promise<any[]> {
+    await this.ensureInitialized();
+
+    try {
+      // Default to today if no date provided
+      const targetDate = date || new Date().toISOString().split('T')[0];
+      const cacheKey = `calendar_dividends_${targetDate}`;
+      
+      // 1. Check SQLite cache (1 hour expiration)
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log('✅ Using cached dividends calendar from SQLite');
+        return cached;
+      }
+
+      // 2. Fetch from API
+      console.log(`📅 Fetching dividends calendar for ${targetDate}...`);
+      const url = `${this.baseURL}/v1/markets/calendar/dividends?date=${targetDate}`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+
+      // Check for rate limit
+      if (data.message && data.message.includes('rate limit')) {
+        console.warn('⚠️ Rate limit hit');
+        // 3. Fallback to old cache
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) {
+          console.log('⚠️ Using old cached dividends calendar as fallback');
+          return oldCached;
+        }
+        return [];
+      }
+
+      // Data structure: { meta: {...}, body: [...] }
+      const dividends = data.body || [];
+      
+      // 4. Save to cache
+      if (dividends.length > 0) {
+        await databaseService.saveMarketData(cacheKey, dividends);
+      }
+      
+      console.log(`✅ Fetched and cached ${dividends.length} dividend events`);
+      return dividends;
+    } catch (error) {
+      console.warn('Error fetching dividends calendar:', error);
+      // 5. Final fallback to old cache
+      const targetDate = date || new Date().toISOString().split('T')[0];
+      const cacheKey = `calendar_dividends_${targetDate}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) {
+        console.log('⚠️ Using old cached dividends calendar due to error');
+        return fallback;
+      }
+      return [];
+    }
+  }
+
+  // =========================================================================
+  // 13. GET ECONOMIC EVENTS CALENDAR
+  // Endpoint: /v1/markets/calendar/economic_events (Mboum Finance API)
+  // Returns economic indicators and events for a specific date
+  // Cache: 1 hour for calendar data
+  // =========================================================================
+  async getEconomicEventsCalendar(date?: string): Promise<any[]> {
+    await this.ensureInitialized();
+
+    try {
+      // Default to today if no date provided
+      const targetDate = date || new Date().toISOString().split('T')[0];
+      const cacheKey = `calendar_economic_${targetDate}`;
+      
+      // 1. Check SQLite cache (1 hour expiration)
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log('✅ Using cached economic events from SQLite');
+        return cached;
+      }
+
+      // 2. Fetch from API
+      console.log(`📅 Fetching economic events for ${targetDate}...`);
+      const url = `${this.baseURL}/v1/markets/calendar/economic_events?date=${targetDate}`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+
+      // Check for rate limit
+      if (data.message && data.message.includes('rate limit')) {
+        console.warn('⚠️ Rate limit hit');
+        // 3. Fallback to old cache
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) {
+          console.log('⚠️ Using old cached economic events as fallback');
+          return oldCached;
+        }
+        return [];
+      }
+
+      // Data structure: { meta: {...}, body: [...] }
+      const events = data.body || [];
+      
+      // 4. Save to cache
+      if (events.length > 0) {
+        await databaseService.saveMarketData(cacheKey, events);
+      }
+      
+      console.log(`✅ Fetched and cached ${events.length} economic events`);
+      return events;
+    } catch (error) {
+      console.warn('Error fetching economic events:', error);
+      // 5. Final fallback to old cache
+      const targetDate = date || new Date().toISOString().split('T')[0];
+      const cacheKey = `calendar_economic_${targetDate}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) {
+        console.log('⚠️ Using old cached economic events due to error');
+        return fallback;
+      }
+      return [];
+    }
+  }
+
+  // =========================================================================
+  // 14. GET IPO CALENDAR
+  // Endpoint: /v1/markets/calendar/ipo (Mboum Finance API)
+  // Returns upcoming and recent IPOs for a specific month
+  // Cache: 1 hour for calendar data
+  // =========================================================================
+  async getIPOCalendar(date?: string): Promise<any> {
+    await this.ensureInitialized();
+
+    try {
+      // Default to current year-month if no date provided (format: YYYY-MM)
+      const targetDate = date || new Date().toISOString().slice(0, 7);
+      const cacheKey = `calendar_ipo_${targetDate}`;
+      
+      // 1. Check SQLite cache (1 hour expiration)
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log('✅ Using cached IPO calendar from SQLite');
+        return cached;
+      }
+
+      // 2. Fetch from API
+      console.log(`📅 Fetching IPO calendar for ${targetDate}...`);
+      const url = `${this.baseURL}/v1/markets/calendar/ipo?date=${targetDate}`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+
+      // Check for rate limit
+      if (data.message && data.message.includes('rate limit')) {
+        console.warn('⚠️ Rate limit hit');
+        // 3. Fallback to old cache
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) {
+          console.log('⚠️ Using old cached IPO calendar as fallback');
+          return oldCached;
+        }
+        return { priced: [], upcoming: [] };
+      }
+
+      // Data structure: { meta: {...}, body: { priced: [...], upcoming: [...] } }
+      const ipos = data.body || { priced: [], upcoming: [] };
+      
+      // 4. Save to cache
+      await databaseService.saveMarketData(cacheKey, ipos);
+      
+      const totalIPOs = (ipos.priced?.length || 0) + (ipos.upcoming?.length || 0);
+      console.log(`✅ Fetched and cached ${totalIPOs} IPOs`);
+      return ipos;
+    } catch (error) {
+      console.warn('Error fetching IPO calendar:', error);
+      // 5. Final fallback to old cache
+      const targetDate = date || new Date().toISOString().slice(0, 7);
+      const cacheKey = `calendar_ipo_${targetDate}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) {
+        console.log('⚠️ Using old cached IPO calendar due to error');
+        return fallback;
+      }
+      return { priced: [], upcoming: [] };
+    }
+  }
+
+  // =========================================================================
+  // 15. GET PUBLIC OFFERINGS CALENDAR
+  // Endpoint: /v1/markets/calendar/public_offerings (Mboum Finance API)
+  // Returns secondary offerings, follow-ons, and other public offerings
+  // Cache: 1 hour for calendar data
+  // =========================================================================
+  async getPublicOfferingsCalendar(date?: string): Promise<any> {
+    await this.ensureInitialized();
+
+    try {
+      // Default to current year-month if no date provided (format: YYYY-MM)
+      const targetDate = date || new Date().toISOString().slice(0, 7);
+      const cacheKey = `calendar_offerings_${targetDate}`;
+      
+      // 1. Check SQLite cache (1 hour expiration)
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log('✅ Using cached public offerings from SQLite');
+        return cached;
+      }
+
+      // 2. Fetch from API
+      console.log(`📅 Fetching public offerings for ${targetDate}...`);
+      const url = `${this.baseURL}/v1/markets/calendar/public_offerings?date=${targetDate}`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+
+      // Check for rate limit
+      if (data.message && data.message.includes('rate limit')) {
+        console.warn('⚠️ Rate limit hit');
+        // 3. Fallback to old cache
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) {
+          console.log('⚠️ Using old cached public offerings as fallback');
+          return oldCached;
+        }
+        return { priced: [], upcoming: [], filed: [], withdrawn: [] };
+      }
+
+      // Data structure: { meta: {...}, body: { priced: [...], upcoming: [...], filed: [...], withdrawn: [...] } }
+      const offerings = data.body || { priced: [], upcoming: [], filed: [], withdrawn: [] };
+      
+      // 4. Save to cache
+      await databaseService.saveMarketData(cacheKey, offerings);
+      
+      const totalOfferings = (offerings.priced?.length || 0) + (offerings.upcoming?.length || 0) + 
+                             (offerings.filed?.length || 0);
+      console.log(`✅ Fetched and cached ${totalOfferings} public offerings`);
+      return offerings;
+    } catch (error) {
+      console.warn('Error fetching public offerings:', error);
+      // 5. Final fallback to old cache
+      const targetDate = date || new Date().toISOString().slice(0, 7);
+      const cacheKey = `calendar_offerings_${targetDate}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) {
+        console.log('⚠️ Using old cached public offerings due to error');
+        return fallback;
+      }
+      return { priced: [], upcoming: [], filed: [], withdrawn: [] };
+    }
+  }
+
+  // =========================================================================
+  // 16. GET STOCK SPLITS CALENDAR
+  // Endpoint: /v1/markets/calendar/stock-splits (Mboum Finance API)
+  // Returns recent and upcoming stock splits
+  // Cache: 1 hour for calendar data
+  // =========================================================================
+  async getStockSplitsCalendar(): Promise<any[]> {
+    await this.ensureInitialized();
+
+    try {
+      const cacheKey = 'calendar_splits';
+      
+      // 1. Check SQLite cache (1 hour expiration)
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log('✅ Using cached stock splits from SQLite');
+        return cached;
+      }
+
+      // 2. Fetch from API
+      console.log('📅 Fetching stock splits calendar...');
+      const url = `${this.baseURL}/v1/markets/calendar/stock-splits`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+
+      // Check for rate limit
+      if (data.message && data.message.includes('rate limit')) {
+        console.warn('⚠️ Rate limit hit');
+        // 3. Fallback to old cache
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) {
+          console.log('⚠️ Using old cached stock splits as fallback');
+          return oldCached;
+        }
+        return [];
+      }
+
+      // Data structure: { meta: { total, page, ... }, body: [...] }
+      const splits = data.body || [];
+      
+      // 4. Save to cache
+      if (splits.length > 0) {
+        await databaseService.saveMarketData(cacheKey, splits);
+      }
+      
+      console.log(`✅ Fetched and cached ${splits.length} stock splits`);
+      return splits;
+    } catch (error) {
+      console.warn('Error fetching stock splits:', error);
+      // 5. Final fallback to old cache
+      const cacheKey = 'calendar_splits';
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) {
+        console.log('⚠️ Using old cached stock splits due to error');
+        return fallback;
+      }
+      return [];
+    }
   }
 }
 

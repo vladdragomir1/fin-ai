@@ -22,6 +22,8 @@ export type RootStackParamList = {
     name: string;
   };
   Login: undefined;
+  MarketMovers: undefined;
+  BrowseStocks: undefined;
 };
 
 export type RootStackScreenProps<T extends keyof RootStackParamList> = NativeStackScreenProps<

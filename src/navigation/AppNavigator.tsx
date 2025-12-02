@@ -18,6 +18,8 @@ import {
   SettingsScreen,
   StatisticsScreen,
   WatchlistScreen,
+  MarketMoversScreen,
+  BrowseStocksScreen,
 } from '@/screens';
 import type { RootStackParamList, TabParamList } from './types';
 
@@ -122,6 +124,24 @@ export const AppNavigator = () => (
         options={{
           presentation: 'card',
           title: 'Asset Details',
+        }}
+      />
+      
+      <Stack.Screen
+        name="MarketMovers"
+        component={MarketMoversScreen}
+        options={{
+          presentation: 'card',
+          title: 'Market Movers',
+        }}
+      />
+      
+      <Stack.Screen
+        name="BrowseStocks"
+        component={BrowseStocksScreen}
+        options={{
+          presentation: 'card',
+          title: 'Browse Stocks',
         }}
       />
     </Stack.Navigator>

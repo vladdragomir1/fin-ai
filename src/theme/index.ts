@@ -10,8 +10,8 @@ export const palette = {
   
   primary: '#FFFFFF',    
   secondary: '#A1A1AA',  
-  accent: '#2563EB',   
-  accentBg: 'rgba(37, 99, 235, 0.1)',
+  accent: '#8B5CF6',   
+  accentBg: 'rgba(139, 92, 246, 0.1)',
   
   success: '#10B981',    
   successBg: 'rgba(16, 185, 129, 0.1)',

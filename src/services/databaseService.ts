@@ -123,9 +123,31 @@ class DatabaseService {
       );
     `);
 
+    // Stock modules cache table (for all additional data modules)
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS stock_modules (
+        symbol TEXT NOT NULL,
+        module TEXT NOT NULL,
+        data TEXT NOT NULL,
+        cached_at INTEGER NOT NULL,
+        PRIMARY KEY (symbol, module),
+        FOREIGN KEY (symbol) REFERENCES companies(symbol)
+      );
+    `);
+
+    // Market data cache table (for screeners, news, etc.)
+    await this.db.execute(`
+      CREATE TABLE IF NOT EXISTS market_data_cache (
+        cache_key TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        cached_at INTEGER NOT NULL
+      );
+    `);
+
     // Create indexes
     await this.db.execute(`CREATE INDEX IF NOT EXISTS idx_historical_symbol ON historical_data(symbol);`);
     await this.db.execute(`CREATE INDEX IF NOT EXISTS idx_historical_date ON historical_data(date);`);
+    await this.db.execute(`CREATE INDEX IF NOT EXISTS idx_modules_symbol ON stock_modules(symbol);`);
 
     //console.log('Database tables created');
   }
@@ -398,6 +420,92 @@ class DatabaseService {
   }
 
   /**
+   * Save stock module data
+   */
+  async saveStockModule(symbol: string, module: string, data: any): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    await this.db.execute(
+      `INSERT OR REPLACE INTO stock_modules (symbol, module, data, cached_at) VALUES (?, ?, ?, ?)`,
+      [symbol, module, JSON.stringify(data), Date.now()]
+    );
+  }
+
+  /**
+   * Get cached stock module data
+   */
+  async getStockModule(symbol: string, module: string, maxAge: number = 24 * 60 * 60 * 1000): Promise<any | null> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    const result = await this.db.execute(
+      `SELECT * FROM stock_modules WHERE symbol = ? AND module = ? AND cached_at > ?`,
+      [symbol, module, Date.now() - maxAge]
+    );
+
+    if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
+
+    const row = result.rows._array[0];
+    try {
+      return JSON.parse(row.data);
+    } catch (e) {
+      console.warn('Failed to parse cached module data', e);
+      return null;
+    }
+  }
+
+  /**
+   * Save market data (screeners, news, etc.)
+   */
+  async saveMarketData(cacheKey: string, data: any): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    await this.db.execute(
+      `INSERT OR REPLACE INTO market_data_cache (cache_key, data, cached_at) VALUES (?, ?, ?)`,
+      [cacheKey, JSON.stringify(data), Date.now()]
+    );
+  }
+
+  /**
+   * Get cached market data
+   */
+  async getMarketData(cacheKey: string, maxAge: number = 15 * 60 * 1000): Promise<any | null> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    const result = await this.db.execute(
+      `SELECT * FROM market_data_cache WHERE cache_key = ? AND cached_at > ?`,
+      [cacheKey, Date.now() - maxAge]
+    );
+
+    if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
+
+    const row = result.rows._array[0];
+    try {
+      return JSON.parse(row.data);
+    } catch (e) {
+      console.warn('Failed to parse cached market data', e);
+      return null;
+    }
+  }
+
+  /**
+   * Clear cache for specific symbol (useful for forcing refresh)
+   */
+  async clearSymbolCache(symbol: string): Promise<void> {
+    if (!this.db) return;
+
+    try {
+      await this.db.execute(`DELETE FROM stock_quotes WHERE symbol = ?`, [symbol]);
+      await this.db.execute(`DELETE FROM stock_modules WHERE symbol = ?`, [symbol]);
+      await this.db.execute(`DELETE FROM historical_data WHERE symbol = ?`, [symbol]);
+      await this.db.execute(`DELETE FROM company_overview WHERE symbol = ?`, [symbol]);
+      await this.db.execute(`DELETE FROM financial_metrics WHERE symbol = ?`, [symbol]);
+      console.log(`✅ Cleared cache for ${symbol}`);
+    } catch (error) {
+      console.error('Error clearing symbol cache:', error);
+    }
+  }
+
+  /**
    * Clear old cached data
    */
   async clearOldCache(maxAge: number = 30 * 24 * 60 * 60 * 1000): Promise<void> {
@@ -408,6 +516,8 @@ class DatabaseService {
     await this.db.execute(`DELETE FROM stock_quotes WHERE cached_at < ?`, [cutoff]);
     await this.db.execute(`DELETE FROM historical_data WHERE cached_at < ?`, [cutoff]);
     await this.db.execute(`DELETE FROM search_cache WHERE cached_at < ?`, [cutoff]);
+    await this.db.execute(`DELETE FROM stock_modules WHERE cached_at < ?`, [cutoff]);
+    await this.db.execute(`DELETE FROM market_data_cache WHERE cached_at < ?`, [cutoff]);
 
     //console.log('Old cache data cleared');
   }

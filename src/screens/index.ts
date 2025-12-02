@@ -6,3 +6,5 @@ export * from './LoginScreen';
 export * from './SettingsScreen';
 export * from './StatisticsScreen';
 export * from './WatchlistScreen';
+export * from './MarketMoversScreen';
+export * from './BrowseStocksScreen';

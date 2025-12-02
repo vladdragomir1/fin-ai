@@ -29,7 +29,7 @@ import type { ChartDataPoint, CompanyOverview, FinancialMetrics, StockQuote } fr
 import type { RootStackParamList } from '@/navigation/types';
 
 // Define the ranges strictly matching your Service logic
-type AllowedRange = '1M' | '6M' | '1Y' | '5Y' | 'ALL';
+type AllowedRange = '1D' | '1M' | '6M' | '1Y' | '5Y' | 'ALL';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CompanyDetails'>;
 
@@ -47,8 +47,8 @@ const DetailCard = ({ label, value, icon: Icon, color = palette.text }: any) => 
 );
 
 const RangeSelector = ({ selected, onSelect }: { selected: string, onSelect: (r: AllowedRange) => void }) => {
-  // Updated ranges to match Mboum API optimization
-  const ranges: AllowedRange[] = ['1M', '6M', '1Y', '5Y', 'ALL'];
+  // Updated ranges to include intraday
+  const ranges: AllowedRange[] = ['1D', '1M', '6M', '1Y', '5Y', 'ALL'];
   return (
     <View style={styles.rangeContainer}>
       {ranges.map((r) => (
@@ -175,22 +175,22 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         setIndexTrend(indexTrendData);
         setNetSharePurchase(netSharePurchaseData);
         
-        console.log('📊 Additional modules loaded:', {
-          hasCalendar: !!calendarData,
-          hasEarningsHistory: !!earningsHistoryData,
-          hasIncome: !!incomeData,
-          hasBalance: !!balanceData,
-          hasCashflow: !!cashflowData,
-          hasInstitution: !!institutionData,
-          hasInsiderHolders: !!insiderHoldersData,
-          hasRecommendation: !!recommendationData,
-          hasUpgradeDowngrade: !!upgradeDowngradeData,
-          hasSecFilings: !!secFilingsData,
-          hasIndexTrend: !!indexTrendData,
-          hasNetSharePurchase: !!netSharePurchaseData,
-        });
+        // Detailed logging for troubleshooting
+        console.log('📊 MODULE LOAD RESULTS FOR', symbol);
+        console.log('  ✓ Calendar Events:', calendarData ? 'LOADED' : '❌ NULL');
+        console.log('  ✓ Earnings History:', earningsHistoryData?.history?.length || 0, 'entries');
+        console.log('  ✓ Income Statement:', incomeData ? 'LOADED' : '❌ NULL');
+        console.log('  ✓ Balance Sheet:', balanceData ? 'LOADED' : '❌ NULL');
+        console.log('  ✓ Cashflow Statement:', cashflowData ? 'LOADED' : '❌ NULL');
+        console.log('  ✓ Institution Ownership:', institutionData?.ownershipList?.length || 0, 'entries');
+        console.log('  ✓ Insider Holders:', insiderHoldersData?.holders?.length || 0, 'entries');
+        console.log('  ✓ Recommendation Trend:', recommendationData?.trend?.length || 0, 'entries');
+        console.log('  ✓ Upgrade/Downgrade:', upgradeDowngradeData?.history?.length || 0, 'entries');
+        console.log('  ✓ SEC Filings:', secFilingsData?.filings?.length || 0, 'entries');
+        console.log('  ✓ Index Trend:', indexTrendData ? 'LOADED' : '❌ NULL');
+        console.log('  ✓ Net Share Purchase:', netSharePurchaseData ? 'LOADED' : '❌ NULL');
       }).catch(err => {
-        console.warn('⚠️ Some additional modules failed to load:', err);
+        console.error('❌ Additional modules failed to load:', err);
       });
       
     } catch (error) {

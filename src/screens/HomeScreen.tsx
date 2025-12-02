@@ -6,7 +6,8 @@ import {
   BarChart3, 
   BrainCircuit, 
   ChevronRight, 
-  LayoutDashboard 
+  LayoutDashboard,
+  TrendingUp
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -116,6 +117,29 @@ export const HomeScreen = () => {
           />
         </View>
 
+        {/* Market Data Section */}
+        <View style={[styles.section, styles.sectionSpacing]}>
+          <Text style={styles.sectionHeader}>MARKET DATA</Text>
+          
+          <FeatureCard
+            title="Market Movers"
+            description="Track daily gainers, losers & most active stocks."
+            icon={TrendingUp}
+            iconColor={palette.success} // Emerald
+            bgTint="rgba(16, 185, 129, 0.1)"
+            onPress={() => navigation.navigate('MarketMovers')}
+          />
+
+          <FeatureCard
+            title="Browse Stocks"
+            description="Explore all listed stocks sorted by market cap."
+            icon={LayoutDashboard}
+            iconColor={palette.warning} // Amber
+            bgTint="rgba(245, 158, 11, 0.1)"
+            onPress={() => navigation.navigate('BrowseStocks')}
+          />
+        </View>
+
       </ScrollView>
     </ScreenShell>
   );
@@ -179,6 +203,9 @@ const styles = StyleSheet.create({
   // Section Styles
   section: {
     gap: spacing.md,
+  },
+  sectionSpacing: {
+    marginTop: spacing.xxl,
   },
   sectionHeader: {
     color: palette.mutedText,
