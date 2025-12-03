@@ -170,7 +170,7 @@ export const AIChatScreen = () => {
     }
   };
 
-  // 5. Send Logic (With Concurrency Fix)
+  // 5. Send Logic (With Concurrency Fix + Auto Title Generation)
   const handleSend = async () => {
     if (!inputText.trim() || modelStatus !== 'READY') return;
 
@@ -186,12 +186,16 @@ export const AIChatScreen = () => {
     setInputText('');
     setIsTyping(true);
 
-    // Save User Message (Functional Update)
+    // Determine if this is the first real message (after welcome message)
+    const currentSession = sessions.find(s => s.id === chatContextId);
+    const isFirstMessage = currentSession && 
+      (currentSession.title === 'New Chat' || currentSession.messages.length <= 1);
+
+    // Save User Message (Functional Update) - Keep "New Chat" if first message
     setSessions(prev => {
       const updated = prev.map(s => {
         if (s.id === chatContextId) {
-            const newTitle = s.title === 'New Chat' ? (userText.slice(0, 25) + '...') : s.title;
-            return { ...s, messages: [...s.messages, userMsg], title: newTitle, lastModified: Date.now() };
+            return { ...s, messages: [...s.messages, userMsg], lastModified: Date.now() };
         }
         return s;
       });
@@ -209,7 +213,7 @@ export const AIChatScreen = () => {
           setIsTyping(false);
       }
 
-      // Save AI Message (Background Safe)
+      // Save AI Message + Generate Title if First Message (Background Safe)
       setSessions(prev => {
         const updated = prev.map(s => 
           s.id === chatContextId 
@@ -220,6 +224,23 @@ export const AIChatScreen = () => {
         saveSessionsToStorage(updated);
         return updated;
       });
+
+      // Generate title AFTER first exchange (runs in background)
+      if (isFirstMessage) {
+        AiService.generateChatTitle(userText, responseText).then(generatedTitle => {
+          setSessions(prev => {
+            const updated = prev.map(s => 
+              s.id === chatContextId 
+                ? { ...s, title: generatedTitle }
+                : s
+            );
+            saveSessionsToStorage(updated);
+            return updated;
+          });
+        }).catch(err => {
+          console.warn('Failed to generate title:', err);
+        });
+      }
 
     } catch (error) {
       if (activeSessionRef.current === chatContextId) {

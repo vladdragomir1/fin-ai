@@ -101,6 +101,61 @@ export const AiService = {
   },
 
   /**
+   * Generate a concise chat title (3-5 words) based on conversation context
+   * Used for chat history similar to ChatGPT/Claude/Gemini
+   */
+  async generateChatTitle(userMessage: string, aiResponse: string): Promise<string> {
+    try {
+      if (!this.isInitialized || !this.context) {
+        // Fallback to truncated user message if AI not ready
+        return userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : '');
+      }
+
+      // Create a prompt for title generation
+      const titlePrompt = `<|startoftext|><|im_start|>system
+You are a helpful assistant that creates concise chat titles. Generate a 3-5 word title that summarizes the main topic of this conversation. Return ONLY the title, nothing else.
+<|im_end|>
+<|im_start|>user
+User asked: "${userMessage}"
+AI responded about: "${aiResponse.slice(0, 200)}"
+
+Generate a 3-5 word title for this chat:
+<|im_end|>
+<|im_start|>assistant
+`;
+
+      console.log('[AI] Generating chat title...');
+      
+      const result = await this.context.completion({
+        prompt: titlePrompt,
+        n_predict: 50, // Short output
+        temperature: 0.3, // Slightly creative but focused
+        top_k: 40,
+        top_p: 0.9,
+        stop: ['<|im_end|>', '<|endoftext|>', '\n\n'],
+      });
+
+      // Clean up the result
+      let title = result.text.trim()
+        .replace(/^["']|["']$/g, '') // Remove quotes
+        .replace(/\n.*/g, '') // Remove everything after first newline
+        .trim();
+
+      // Fallback if title is too long or empty
+      if (!title || title.length > 50) {
+        title = userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : '');
+      }
+
+      console.log(`[AI] Generated title: "${title}"`);
+      return title;
+
+    } catch (error) {
+      console.error('[AI] Error generating title:', error);
+      return userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : '');
+    }
+  },
+
+  /**
    * Release memory when leaving the screen
    */
   async release() {
