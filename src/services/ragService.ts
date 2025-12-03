@@ -3,8 +3,16 @@ import { financeApiService } from './financeApiService';
 
 /**
  * RAG (Retrieval Augmented Generation) Service
- * Prepares financial data context for Llama-3.2 local LLM
- * OPTIMIZED FOR: Accuracy, Reduced Hallucinations, and "Smart" Analysis.
+ * Prepares financial data context for LFM2-1.2B-RAG local LLM
+ * OPTIMIZED FOR: Document-based Q&A, Accuracy, and Reduced Hallucinations.
+ * LFM2 specializes in answering questions based on provided contextual documents.
+ * 
+ * SUPPORTED DATA SOURCES:
+ * - Company data (quotes, overview, metrics, historical)
+ * - Market movers (gainers, losers, most active)
+ * - Market news (articles, videos, headlines)
+ * - Earnings calendar (upcoming announcements)
+ * - Market overview (sector analysis, sentiment)
  */
 
 interface RAGContext {
@@ -39,14 +47,24 @@ class RAGService {
    * STRATEGY: Provide clean, labeled data to reduce confusion.
    */
   async buildCompanyContext(symbol: string): Promise<string> {
+    console.log(`[RAG] Building context for ${symbol}`);
+    
     // 1. TRIGGER REFRESH (API -> SQLite)
     await this.refreshCompanyData(symbol);
 
     // 2. READ from SQLite (Now contains fresh data)
     const data = await databaseService.getCompanyDataForRAG(symbol);
     
+    console.log(`[RAG] Data retrieved for ${symbol}:`, {
+      quote: !!data.quote,
+      overview: !!data.overview,
+      metrics: !!data.metrics,
+      historical: data.historical?.length || 0
+    });
+    
     if (!data.quote && !data.overview && !data.metrics) {
-      return `No data available for ${symbol}. The company has not been searched or cached yet.`;
+      console.warn(`[RAG] No data found for ${symbol} after refresh attempt`);
+      return `### ${symbol}\n\nNo financial data available yet. The data may still be loading or the symbol might be invalid. Try searching for this company in the Browse Stocks screen first.`;
     }
 
     let context = `### Financial Data for ${symbol}\n`;
@@ -129,7 +147,7 @@ class RAGService {
   }
 
   /**
-   * Build general market context from all cached data
+   * Build general market context from all cached data + market movers + news
    */
   async buildMarketContext(): Promise<string> {
     const symbols = await databaseService.getAllCachedSymbols();
@@ -154,95 +172,328 @@ class RAGService {
 
     context += `Total Companies Analyzed: ${symbols.length}\n`;
     context += `Positive Movers: ${positiveMovers}\n`;
-    context += `Negative Movers: ${negativeMovers}\n`;
+    context += `Negative Movers: ${negativeMovers}\n\n`;
+
+    // Add Market Movers data
+    const moversData = await this.getMarketMoversData();
+    if (moversData) context += moversData + '\n';
+
+    // Add Recent News
+    const newsData = await this.getMarketNewsData();
+    if (newsData) context += newsData + '\n';
 
     return context;
   }
 
   /**
-   * Extract relevant context based on user query
+   * Get Market Movers (Gainers, Losers, Most Active)
    */
-  async extractRelevantContext(query: string): Promise<string> {
-    const cleanQuery = query.trim();
+  private async getMarketMoversData(): Promise<string> {
+    try {
+      const [gainers, losers, mostActive] = await Promise.all([
+        databaseService.getMarketData('screener_day_gainers', 60 * 60 * 1000),
+        databaseService.getMarketData('screener_day_losers', 60 * 60 * 1000),
+        databaseService.getMarketData('screener_most_actives', 60 * 60 * 1000),
+      ]);
 
-    // 1. Symbol Match (e.g. AAPL)
-    const symbolMatch = cleanQuery.match(/\b[A-Za-z]{1,5}\b/);
-    if (symbolMatch) {
-      const potentialSymbol = symbolMatch[0].toUpperCase();
-      const data = await databaseService.getCompanyOverview(potentialSymbol);
-      if (data) {
-        return await this.buildCompanyContext(potentialSymbol);
+      let context = '';
+
+      if (gainers && gainers.length > 0) {
+        context += `**Top Gainers (${gainers.length}):**\n`;
+        gainers.slice(0, 5).forEach((stock: any) => {
+          context += `- ${stock.symbol} (${stock.shortName || stock.name}): +${stock.regularMarketChangePercent?.toFixed(2) || '0'}%\n`;
+        });
+        context += '\n';
       }
-    }
 
-    // 2. Name Match (e.g. Apple)
-    const allSymbols = await databaseService.getAllCachedSymbols();
-    for (const sym of allSymbols) {
-      const overview = await databaseService.getCompanyOverview(sym);
-      if (overview && overview.name) {
-        if (cleanQuery.toLowerCase().includes(overview.name.toLowerCase().split(' ')[0])) {
-           return await this.buildCompanyContext(sym);
-        }
+      if (losers && losers.length > 0) {
+        context += `**Top Losers (${losers.length}):**\n`;
+        losers.slice(0, 5).forEach((stock: any) => {
+          context += `- ${stock.symbol} (${stock.shortName || stock.name}): ${stock.regularMarketChangePercent?.toFixed(2) || '0'}%\n`;
+        });
+        context += '\n';
       }
-    }
 
-    // 3. Comparison Logic
-    const compareKeywords = ['compare', 'vs', 'versus', 'difference'];
-    if (compareKeywords.some(k => cleanQuery.toLowerCase().includes(k))) {
-      const foundSymbols: string[] = [];
-      for (const sym of allSymbols) {
-         if (cleanQuery.toUpperCase().includes(sym)) foundSymbols.push(sym);
+      if (mostActive && mostActive.length > 0) {
+        context += `**Most Active (${mostActive.length}):**\n`;
+        mostActive.slice(0, 5).forEach((stock: any) => {
+          context += `- ${stock.symbol} (${stock.shortName || stock.name}): Vol ${(stock.regularMarketVolume / 1e6)?.toFixed(1) || '0'}M\n`;
+        });
+        context += '\n';
       }
-      if (foundSymbols.length >= 2) {
-        return await this.buildComparisonContext(foundSymbols);
-      }
-    }
 
-    // 4. Market Overview
-    const marketKeywords = ['market', 'overview', 'sector', 'industry'];
-    if (marketKeywords.some(k => cleanQuery.toLowerCase().includes(k))) {
-      return await this.buildMarketContext();
+      return context;
+    } catch (error) {
+      console.warn('[RAG] Failed to load market movers:', error);
+      return '';
     }
-
-    // Default Fallback
-    return `System Message: The user asked "${cleanQuery}", but no specific company data was found in the local cache. Answer generally or ask them to search for a specific ticker symbol first.`;
   }
 
   /**
-   * Format prompt for Llama-3.2
-   * "SMART" PROMPT: Designed for accuracy and reasoning over speed.
+   * Get Market News
+   */
+  private async getMarketNewsData(): Promise<string> {
+    try {
+      const news = await databaseService.getMarketData('news_v2_ALL_ALL', 15 * 60 * 1000);
+      
+      if (!news || news.length === 0) return '';
+
+      let context = `**Recent Market News (${news.length} articles):**\n`;
+      
+      // Show top 5 most recent news
+      news.slice(0, 5).forEach((article: any, index: number) => {
+        context += `${index + 1}. **${article.title}**\n`;
+        if (article.pubDate) context += `   Published: ${article.pubDate}\n`;
+        if (article.summary) {
+          const summary = article.summary.length > 150 
+            ? article.summary.substring(0, 150) + '...' 
+            : article.summary;
+          context += `   ${summary}\n`;
+        }
+        context += '\n';
+      });
+
+      return context;
+    } catch (error) {
+      console.warn('[RAG] Failed to load market news:', error);
+      return '';
+    }
+  }
+
+  /**
+   * Get Earnings Calendar data
+   */
+  private async getEarningsCalendarData(): Promise<string> {
+    try {
+      const earnings = await databaseService.getMarketData('calendar_earnings', 60 * 60 * 1000);
+      
+      if (!earnings || earnings.length === 0) return '';
+
+      let context = `**Upcoming Earnings (${earnings.length} companies):**\n`;
+      
+      // Show top 10 most relevant earnings
+      earnings.slice(0, 10).forEach((event: any) => {
+        // The API returns: { ticker, name, date, eps_estimate, eps_actual, etc. }
+        const symbol = event.ticker || event.symbol;
+        const companyName = event.name || event.companyName || symbol;
+        const earningsDate = event.date || event.earningsDate || event.reportDate;
+        const epsEst = event.eps_estimate || event.epsEstimate;
+        
+        if (symbol) {
+          context += `- ${symbol}`;
+          if (companyName && companyName !== symbol) context += ` (${companyName})`;
+          if (earningsDate) context += `: ${earningsDate}`;
+          context += '\n';
+          if (epsEst) context += `  EPS Estimate: $${epsEst}\n`;
+        }
+      });
+
+      return context + '\n';
+    } catch (error) {
+      console.warn('[RAG] Failed to load earnings calendar:', error);
+      return '';
+    }
+  }
+
+  /**
+   * Extract relevant context based on user query
+   * FIXED: Better symbol detection and informative fallback
+   */
+  async extractRelevantContext(query: string): Promise<string> {
+    const cleanQuery = query.trim();
+    const queryLower = cleanQuery.toLowerCase();
+    const allSymbols = await databaseService.getAllCachedSymbols();
+
+    console.log(`[RAG] Processing query: "${cleanQuery}"`);
+    console.log(`[RAG] Database has ${allSymbols.length} cached symbols:`, allSymbols.slice(0, 10).join(', '));
+
+    // 1. Direct Symbol Match - Look for exact ticker symbols (2-5 uppercase letters)
+    const words = cleanQuery.toUpperCase().split(/\s+/);
+    for (const word of words) {
+      // Check if word matches a cached symbol (must be 2-5 chars and in our DB)
+      if (word.length >= 2 && word.length <= 5 && allSymbols.includes(word)) {
+        console.log(`[RAG] Found direct symbol match: ${word}`);
+        return await this.buildCompanyContext(word);
+      }
+    }
+
+    // 2. Company Name Match (e.g., "Apple", "Microsoft", "Tesla", "Amazon")
+    // Use hardcoded mapping for common symbols (faster + no DB dependency)
+    const commonCompanies: { [key: string]: string } = {
+      'apple': 'AAPL',
+      'microsoft': 'MSFT',
+      'google': 'GOOGL',
+      'alphabet': 'GOOGL',
+      'amazon': 'AMZN',
+      'tesla': 'TSLA',
+      'meta': 'META',
+      'facebook': 'META',
+      'nvidia': 'NVDA',
+      'netflix': 'NFLX',
+    };
+    
+    for (const [companyName, symbol] of Object.entries(commonCompanies)) {
+      if (queryLower.includes(companyName) && allSymbols.includes(symbol)) {
+        console.log(`[RAG] Found common company match: ${companyName} -> ${symbol}`);
+        return await this.buildCompanyContext(symbol);
+      }
+    }
+    
+    // Check company overview (includes full name) for other companies
+    for (const sym of allSymbols) {
+      const overview = await databaseService.getCompanyOverview(sym);
+      if (overview && overview.name) {
+        const companyWords = overview.name.toLowerCase().split(/[\s,]+/);
+        for (const companyWord of companyWords) {
+          // Match significant words (3+ chars)
+          if (companyWord.length >= 3 && queryLower.includes(companyWord)) {
+            console.log(`[RAG] Found company name match: ${overview.name} (${sym})`);
+            return await this.buildCompanyContext(sym);
+          }
+        }
+      }
+      
+      // If no overview, check if symbol name itself matches (case-insensitive)
+      if (sym.length <= 5 && queryLower.includes(sym.toLowerCase())) {
+        console.log(`[RAG] Found symbol in query text: ${sym}`);
+        return await this.buildCompanyContext(sym);
+      }
+    }
+
+    // 3. Multiple symbols mentioned - Comparison
+    const foundSymbols = allSymbols.filter(sym => cleanQuery.toUpperCase().includes(sym));
+    if (foundSymbols.length >= 2) {
+      console.log(`[RAG] Found comparison request: ${foundSymbols.join(', ')}`);
+      return await this.buildComparisonContext(foundSymbols);
+    }
+
+    // 4. Watchlist queries - special handling
+    const watchlistKeywords = ['watchlist', 'portfolio', 'my stocks', 'my companies'];
+    if (watchlistKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] Detected watchlist query`);
+      // Extract any company names mentioned with watchlist
+      for (const sym of allSymbols) {
+        if (queryLower.includes(sym.toLowerCase())) {
+          console.log(`[RAG] Found symbol in watchlist query: ${sym}`);
+          return await this.buildCompanyContext(sym);
+        }
+        // Check company names
+        const overview = await databaseService.getCompanyOverview(sym);
+        if (overview && overview.name) {
+          const nameWords = overview.name.toLowerCase().split(/[\s,]+/);
+          for (const nameWord of nameWords) {
+            if (nameWord.length >= 4 && queryLower.includes(nameWord)) {
+              console.log(`[RAG] Found company in watchlist query: ${overview.name} (${sym})`);
+              return await this.buildCompanyContext(sym);
+            }
+          }
+        }
+      }
+      // If no specific company, show all watchlist
+      return await this.buildMarketContext();
+    }
+
+    // 5. News-specific queries
+    const newsKeywords = ['news', 'headline', 'article', 'latest', 'breaking', 'update'];
+    if (newsKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] Detected news query`);
+      const newsData = await this.getMarketNewsData();
+      if (newsData) {
+        return `### Market News\n\n${newsData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // 6. Earnings/Calendar queries
+    const earningsKeywords = ['earnings', 'report', 'announcement', 'calendar', 'upcoming'];
+    if (earningsKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] Detected earnings query`);
+      const earningsData = await this.getEarningsCalendarData();
+      if (earningsData) {
+        return `### Earnings Calendar\n\n${earningsData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // 7. Market Movers queries (gainers, losers, active)
+    const moversKeywords = ['gainer', 'loser', 'active', 'mover', 'winner', 'performer'];
+    if (moversKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] Detected market movers query`);
+      const moversData = await this.getMarketMoversData();
+      if (moversData) {
+        return `### Market Movers\n\n${moversData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // 8. Market Overview Keywords
+    const marketKeywords = ['market', 'overview', 'sector', 'industry', 'trends', 'summary'];
+    if (marketKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] Building comprehensive market overview context`);
+      return await this.buildMarketContext();
+    }
+
+    // 9. General questions with available data
+    if (allSymbols.length > 0) {
+      console.log(`[RAG] No specific match, showing available companies`);
+      const preview = await this.buildMarketContext();
+      return `${preview}\n\n**Available Companies:** ${allSymbols.slice(0, 20).join(', ')}${allSymbols.length > 20 ? ` and ${allSymbols.length - 20} more...` : ''}\n\nThe user asked: "${cleanQuery}"`;
+    }
+
+    // 10. No data available
+    console.log(`[RAG] No cached data available`);
+    return `**System Status:** The knowledge base is currently empty. No companies have been searched yet.\n\n**To get started:**\n1. Search for a company (e.g., AAPL, MSFT, TSLA)\n2. Browse stocks in the app\n3. Add companies to your watchlist\n4. Check Market Movers or Statistics screens\n\nThen I'll be able to provide detailed financial analysis!\n\nUser asked: "${cleanQuery}"`;
+  }
+
+  /**
+   * Format prompt for LFM2-1.2B-RAG
+   * Uses ChatML format optimized for document-based question answering
    */
   async formatPromptForLLM(userQuery: string): Promise<string> {
     const context = await this.extractRelevantContext(userQuery);
     
-    // --- FIX: Defined date here ---
     const date = new Date().toISOString().split('T')[0];
-    // ------------------------------
 
-    return `<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    // ChatML format for LFM2-1.2B-RAG (optimized for document-based Q&A)
+    // System prompt: Optional but recommended for output language and behavior control
+    // Context: Must be in user message (LFM2 is trained for this pattern)
+    const prompt = `<|startoftext|><|im_start|>system
+You are FinAI, an expert financial analyst. Always respond in English. Current Date: ${date}. Answer questions based strictly on the provided financial data. If data is missing, state it clearly. Use Markdown formatting with bold for key numbers.<|im_end|>
+<|im_start|>user
+Use the following context to answer questions:
 
-You are FinAI, a senior investment strategist and expert financial analyst.
-Current Date: ${date}
-
-### CORE INSTRUCTIONS (STRICT ADHERENCE REQUIRED):
-1.  **Source of Truth:** You must answer using ONLY the "Context Data" provided below. Do not use outside knowledge to hallucinate prices.
-2.  **No Guessing:** If the data (e.g., Dividend or P/E) is missing from the Context, state clearly: "I do not have that data."
-3.  **Citation:** When mentioning a number, ensure it exists in the Context Data.
-
-### ANALYSIS STEPS:
-1.  **Check Data:** Look at the "Context Data" section.
-2.  **Analyze:** Identify trends (is the price up or down over the last 5 days?).
-3.  **Evaluate:** Look at P/E and Market Cap. Is it a large cap? Is it expensive?
-4.  **Synthesize:** Combine these facts into a concise, professional answer.
-5.  **Format:** Use Markdown (Bold for numbers, tables for lists).
-
-### CONTEXT DATA:
 ${context}
 
-<|eot_id|><|start_header_id|>user<|end_header_id|>
+---
 
-${userQuery}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+Question: ${userQuery}<|im_end|>
+<|im_start|>assistant
 `;
+
+    console.log('[RAG] Prompt length:', prompt.length);
+    console.log('[RAG] Context preview:', context.substring(0, 200) + '...');
+    
+    return prompt;
+  }
+
+  /**
+   * Debug: Get cache statistics
+   */
+  async getCacheStats(): Promise<any> {
+    const symbols = await databaseService.getAllCachedSymbols();
+    const [gainers, losers, mostActive, news, earnings] = await Promise.all([
+      databaseService.getMarketData('screener_day_gainers', Infinity),
+      databaseService.getMarketData('screener_day_losers', Infinity),
+      databaseService.getMarketData('screener_most_actives', Infinity),
+      databaseService.getMarketData('news_v2_ALL_ALL', Infinity),
+      databaseService.getMarketData('calendar_earnings', Infinity),
+    ]);
+
+    return {
+      companies: symbols.length,
+      gainers: gainers?.length || 0,
+      losers: losers?.length || 0,
+      mostActive: mostActive?.length || 0,
+      news: news?.length || 0,
+      earnings: earnings?.length || 0,
+    };
   }
 
   /**

@@ -96,15 +96,41 @@ export const AIChatScreen = () => {
   };
 
   // 4. Session Logic
-  const startNewChat = () => {
+  const startNewChat = async () => {
     setIsTyping(false); // Reset typing state
     setInputText('');
     setSidebarVisible(false);
 
     const newId = Date.now().toString();
+    
+    // Get cache stats for welcome message
+    let welcomeText = 'Hello! I am FinAI. Ask me about market trends, stock analysis, or your portfolio.';
+    try {
+      const { databaseService } = await import('@/services/databaseService');
+      const { ragService } = await import('@/services/ragService');
+      
+      // Ensure database is initialized
+      await databaseService.initialize();
+      
+      const stats = await ragService.getCacheStats();
+      const available = [];
+      if (stats.companies > 0) available.push(`${stats.companies} companies`);
+      if (stats.news > 0) available.push(`${stats.news} news articles`);
+      if (stats.gainers > 0) available.push('market movers');
+      if (stats.earnings > 0) available.push(`${stats.earnings} earnings events`);
+      
+      if (available.length > 0) {
+        welcomeText += `\n\n**Available Data:** ${available.join(', ')}`;
+      } else {
+        welcomeText += '\n\n💡 *Tip: Browse stocks or check Market Movers to populate my knowledge base!*';
+      }
+    } catch (e) {
+      console.warn('Failed to load cache stats:', e);
+    }
+    
     const welcomeMsg: Message = { 
       id: 'welcome', 
-      text: 'Hello! I am FinAI. Ask me about market trends, stock analysis, or your portfolio.', 
+      text: welcomeText, 
       sender: 'ai',
       timestamp: Date.now()
     };
@@ -235,7 +261,7 @@ export const AIChatScreen = () => {
         <View style={styles.headerTitleContainer}>
           <Text style={styles.headerTitle}>FinAI</Text>
           <View style={styles.modelTag}>
-            <Text style={styles.modelTagText}>Llama 3.2</Text>
+            <Text style={styles.modelTagText}>LFM2 RAG</Text>
           </View>
         </View>
 

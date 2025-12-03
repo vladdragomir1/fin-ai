@@ -146,6 +146,37 @@ class FinanceApiService {
         if (cached) return cached;
       } catch (e) {}
 
+      // Last resort: Return mock data for common companies (when rate limited)
+      console.log('💡 Using mock search results for common companies');
+      const mockCompanies: { [key: string]: Company } = {
+        'AAPL': { symbol: 'AAPL', name: 'Apple Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'APPLE': { symbol: 'AAPL', name: 'Apple Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'MSFT': { symbol: 'MSFT', name: 'Microsoft Corporation', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'MICROSOFT': { symbol: 'MSFT', name: 'Microsoft Corporation', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'GOOGL': { symbol: 'GOOGL', name: 'Alphabet Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'GOOGLE': { symbol: 'GOOGL', name: 'Alphabet Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'AMZN': { symbol: 'AMZN', name: 'Amazon.com Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'AMAZON': { symbol: 'AMZN', name: 'Amazon.com Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'TSLA': { symbol: 'TSLA', name: 'Tesla Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'TESLA': { symbol: 'TSLA', name: 'Tesla Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'META': { symbol: 'META', name: 'Meta Platforms Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'FACEBOOK': { symbol: 'META', name: 'Meta Platforms Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'NVDA': { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'NVIDIA': { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'NFLX': { symbol: 'NFLX', name: 'Netflix Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+        'NETFLIX': { symbol: 'NFLX', name: 'Netflix Inc.', exchange: 'NASDAQ', currency: 'USD', country: 'USA' },
+      };
+
+      const queryUpper = query.toUpperCase();
+      if (mockCompanies[queryUpper]) {
+        const result = [mockCompanies[queryUpper]];
+        // Save to cache for future use
+        try {
+          await databaseService.saveSearchCache(query, result);
+        } catch (e) {}
+        return result;
+      }
+
       return [];
     }
   }

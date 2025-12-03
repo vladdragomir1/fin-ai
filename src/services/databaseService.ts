@@ -170,6 +170,12 @@ class DatabaseService {
   async saveStockQuote(quote: StockQuote): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
 
+    // Ensure company record exists so symbol appears in getAllCachedSymbols()
+    await this.db.execute(
+      `INSERT OR IGNORE INTO companies (symbol, name, exchange, currency, country, cached_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [quote.symbol, quote.symbol, 'N/A', 'USD', 'USA', Date.now()]
+    );
+
     await this.db.execute(
       `INSERT OR REPLACE INTO stock_quotes (symbol, price, change_value, change_percent, volume, high, low, open, previous_close, timestamp, cached_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [quote.symbol, quote.price, quote.change, quote.changePercent, quote.volume, quote.high, quote.low, quote.open, quote.previousClose, quote.timestamp, Date.now()]
@@ -260,6 +266,12 @@ class DatabaseService {
   async saveCompanyOverview(overview: CompanyOverview): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
 
+    // Ensure company record exists
+    await this.db.execute(
+      `INSERT OR REPLACE INTO companies (symbol, name, exchange, currency, country, cached_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [overview.symbol, overview.name, overview.exchange || 'N/A', overview.currency || 'USD', overview.country || 'USA', Date.now()]
+    );
+
     await this.db.execute(
       `INSERT OR REPLACE INTO company_overview (symbol, name, exchange, currency, country, description, sector, industry, employees, website, cached_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [overview.symbol, overview.name, overview.exchange, overview.currency, overview.country, overview.description || null, overview.sector, overview.industry, overview.employees || null, overview.website || null, Date.now()]
@@ -299,6 +311,12 @@ class DatabaseService {
    */
   async saveFinancialMetrics(metrics: FinancialMetrics): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
+
+    // Ensure company record exists
+    await this.db.execute(
+      `INSERT OR IGNORE INTO companies (symbol, name, exchange, currency, country, cached_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [metrics.symbol, metrics.symbol, 'N/A', 'USD', 'USA', Date.now()]
+    );
 
     await this.db.execute(
       `INSERT OR REPLACE INTO financial_metrics (symbol, pe_ratio, eps, market_cap, dividend_yield, week_high_52, week_low_52, beta, average_volume, cached_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
