@@ -86,6 +86,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
   const [secFilings, setSecFilings] = useState<any>(null);
   const [indexTrend, setIndexTrend] = useState<any>(null);
   const [netSharePurchase, setNetSharePurchase] = useState<any>(null);
+  const [technicalIndicators, setTechnicalIndicators] = useState<any>(null);
   
   // Chart Specific States
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]); 
@@ -148,6 +149,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         financeApiService.getStockModule(symbol, 'sec-filings'),
         financeApiService.getStockModule(symbol, 'index-trend'),
         financeApiService.getStockModule(symbol, 'net-share-purchase-activity'),
+        financeApiService.getTechnicalIndicators(symbol, '5m'),
       ]).then(([
         calendarData,
         earningsHistoryData,
@@ -161,6 +163,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         secFilingsData,
         indexTrendData,
         netSharePurchaseData,
+        technicalIndicatorsData,
       ]) => {
         setCalendarEvents(calendarData);
         setEarningsHistory(earningsHistoryData);
@@ -174,6 +177,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         setSecFilings(secFilingsData);
         setIndexTrend(indexTrendData);
         setNetSharePurchase(netSharePurchaseData);
+        setTechnicalIndicators(technicalIndicatorsData);
         
         // Detailed logging for troubleshooting
         console.log('📊 MODULE LOAD RESULTS FOR', symbol);
@@ -189,6 +193,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         console.log('  ✓ SEC Filings:', secFilingsData?.filings?.length || 0, 'entries');
         console.log('  ✓ Index Trend:', indexTrendData ? 'LOADED' : '❌ NULL');
         console.log('  ✓ Net Share Purchase:', netSharePurchaseData ? 'LOADED' : '❌ NULL');
+        console.log('  ✓ Technical Indicators:', technicalIndicatorsData ? 'LOADED' : '❌ NULL');
       }).catch(err => {
         console.error('❌ Additional modules failed to load:', err);
       });
@@ -676,7 +681,135 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
           </View>
         )}
 
-        {/* 14. Company Profile */}
+        {/* 14. Technical Indicators */}
+        {technicalIndicators && (technicalIndicators.sma || technicalIndicators.rsi || technicalIndicators.macd || technicalIndicators.adx) && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>TECHNICAL INDICATORS (5M)</Text>
+            <View style={styles.grid}>
+              {/* SMA - Simple Moving Average */}
+              {technicalIndicators.sma && (() => {
+                const smaData = technicalIndicators.sma;
+                const latestSMA = smaData.values?.[0] || smaData.data?.[0];
+                const smaValue = latestSMA?.value || latestSMA?.SMA || 'N/A';
+                return (
+                  <View style={styles.indicatorCard}>
+                    <View style={styles.indicatorHeader}>
+                      <Text style={styles.indicatorName}>SMA (50)</Text>
+                      <View style={styles.indicatorBadge}>
+                        <Activity size={12} color={palette.accent} />
+                      </View>
+                    </View>
+                    <Text style={[styles.indicatorValue, { color: palette.accent }]}>
+                      {typeof smaValue === 'number' ? `$${smaValue.toFixed(2)}` : smaValue}
+                    </Text>
+                    <Text style={styles.indicatorLabel}>Moving Average</Text>
+                  </View>
+                );
+              })()}
+
+              {/* RSI - Relative Strength Index */}
+              {technicalIndicators.rsi && (() => {
+                const rsiData = technicalIndicators.rsi;
+                const latestRSI = rsiData.values?.[0] || rsiData.data?.[0];
+                const rsiValue = latestRSI?.value || latestRSI?.RSI || 0;
+                const rsiNum = typeof rsiValue === 'number' ? rsiValue : parseFloat(rsiValue) || 0;
+                
+                // RSI interpretation: <30 oversold, >70 overbought, 30-70 neutral
+                let rsiColor = palette.mutedText;
+                let rsiStatus = 'Neutral';
+                if (rsiNum < 30) {
+                  rsiColor = palette.success;
+                  rsiStatus = 'Oversold';
+                } else if (rsiNum > 70) {
+                  rsiColor = palette.danger;
+                  rsiStatus = 'Overbought';
+                }
+                
+                return (
+                  <View style={styles.indicatorCard}>
+                    <View style={styles.indicatorHeader}>
+                      <Text style={styles.indicatorName}>RSI (14)</Text>
+                      <View style={[styles.indicatorBadge, { backgroundColor: `${rsiColor}20` }]}>
+                        <TrendingUp size={12} color={rsiColor} />
+                      </View>
+                    </View>
+                    <Text style={[styles.indicatorValue, { color: rsiColor }]}>
+                      {rsiNum.toFixed(2)}
+                    </Text>
+                    <Text style={styles.indicatorLabel}>{rsiStatus}</Text>
+                  </View>
+                );
+              })()}
+
+              {/* MACD - Moving Average Convergence Divergence */}
+              {technicalIndicators.macd && (() => {
+                const macdData = technicalIndicators.macd;
+                const latestMACD = macdData.values?.[0] || macdData.data?.[0];
+                const macdValue = latestMACD?.MACD || latestMACD?.macd || 0;
+                const signalValue = latestMACD?.signal || latestMACD?.MACD_Signal || 0;
+                const histogramValue = latestMACD?.histogram || latestMACD?.MACD_Hist || 0;
+                
+                const macdNum = typeof macdValue === 'number' ? macdValue : parseFloat(macdValue) || 0;
+                const histNum = typeof histogramValue === 'number' ? histogramValue : parseFloat(histogramValue) || 0;
+                
+                // MACD interpretation: positive histogram = bullish, negative = bearish
+                const macdColor = histNum >= 0 ? palette.success : palette.danger;
+                const macdStatus = histNum >= 0 ? 'Bullish' : 'Bearish';
+                
+                return (
+                  <View style={styles.indicatorCard}>
+                    <View style={styles.indicatorHeader}>
+                      <Text style={styles.indicatorName}>MACD</Text>
+                      <View style={[styles.indicatorBadge, { backgroundColor: `${macdColor}20` }]}>
+                        <BarChart2 size={12} color={macdColor} />
+                      </View>
+                    </View>
+                    <Text style={[styles.indicatorValue, { color: macdColor }]}>
+                      {macdNum.toFixed(4)}
+                    </Text>
+                    <Text style={styles.indicatorLabel}>{macdStatus}</Text>
+                  </View>
+                );
+              })()}
+
+              {/* ADX - Average Directional Index */}
+              {technicalIndicators.adx && (() => {
+                const adxData = technicalIndicators.adx;
+                const latestADX = adxData.values?.[0] || adxData.data?.[0];
+                const adxValue = latestADX?.value || latestADX?.ADX || 0;
+                const adxNum = typeof adxValue === 'number' ? adxValue : parseFloat(adxValue) || 0;
+                
+                // ADX interpretation: <20 weak trend, 20-40 strong trend, >40 very strong trend
+                let adxColor = palette.mutedText;
+                let adxStatus = 'Weak Trend';
+                if (adxNum > 40) {
+                  adxColor = palette.success;
+                  adxStatus = 'Very Strong';
+                } else if (adxNum >= 20) {
+                  adxColor = palette.accent;
+                  adxStatus = 'Strong Trend';
+                }
+                
+                return (
+                  <View style={styles.indicatorCard}>
+                    <View style={styles.indicatorHeader}>
+                      <Text style={styles.indicatorName}>ADX (14)</Text>
+                      <View style={[styles.indicatorBadge, { backgroundColor: `${adxColor}20` }]}>
+                        <Activity size={12} color={adxColor} />
+                      </View>
+                    </View>
+                    <Text style={[styles.indicatorValue, { color: adxColor }]}>
+                      {adxNum.toFixed(2)}
+                    </Text>
+                    <Text style={styles.indicatorLabel}>{adxStatus}</Text>
+                  </View>
+                );
+              })()}
+            </View>
+          </View>
+        )}
+
+        {/* 15. Company Profile */}
         {overview && (
           <View style={styles.section}>
             <Text style={styles.sectionHeader}>PROFILE</Text>
@@ -1279,5 +1412,44 @@ const styles = StyleSheet.create({
   netShareFooterText: {
     color: palette.mutedText,
     fontSize: 12,
+  },
+
+  // Technical Indicators
+  indicatorCard: {
+    width: '47%',
+    backgroundColor: palette.surface,
+    padding: spacing.md,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  indicatorHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  indicatorName: {
+    color: palette.text,
+    fontSize: 13,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  indicatorBadge: {
+    backgroundColor: palette.accentBg,
+    padding: 6,
+    borderRadius: 8,
+  },
+  indicatorValue: {
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  indicatorLabel: {
+    color: palette.mutedText,
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
   },
 });

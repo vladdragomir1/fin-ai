@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -25,11 +25,33 @@ import * as Keychain from 'react-native-keychain';
 import ReactNativeBiometrics from 'react-native-biometrics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { palette, spacing, layout } from '@/theme';
+import crypto from 'react-native-quick-crypto';
+import { attemptPinMigrationOnLogin } from '@/utils/pinMigration';
 
 // --- LOGIC CONSTANTS ---
 const STORAGE_KEY_USERNAME = 'username';
 const STORAGE_KEY_ALL_USERS = 'registered_users';
 const KEYCHAIN_SERVICE = 'FinanceAI_PIN';
+const MAX_LOGIN_ATTEMPTS = 3;
+const LOCKOUT_DURATION = 30000; // 30 seconds in milliseconds
+
+// --- SECURITY UTILITIES ---
+/**
+ * Hash a PIN using PBKDF2 with SHA-256
+ * @param pin - The PIN to hash
+ * @param salt - Salt for the hash (username is used as salt)
+ * @returns Hashed PIN as hex string
+ */
+const hashPin = (pin: string, salt: string): string => {
+  try {
+    // Use PBKDF2 with 100,000 iterations for strong security
+    const hash = crypto.pbkdf2Sync(pin, salt, 100000, 32, 'sha256');
+    return hash.toString('hex');
+  } catch (error) {
+    console.error('Error hashing PIN:', error);
+    throw error;
+  }
+};
 
 interface LoginScreenProps {
   onLoginSuccess: () => void;
@@ -47,12 +69,50 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
   const [error, setError] = useState<string>('');
   const [showQuickLogin, setShowQuickLogin] = useState<boolean>(false);
   const [biometricsAvailable, setBiometricsAvailable] = useState<boolean>(false);
+  
+  // --- BRUTE-FORCE PROTECTION STATE ---
+  const [failedAttempts, setFailedAttempts] = useState<number>(0);
+  const [isLockedOut, setIsLockedOut] = useState<boolean>(false);
+  const [lockoutEndTime, setLockoutEndTime] = useState<number>(0);
+  const [remainingLockoutTime, setRemainingLockoutTime] = useState<number>(0);
+  const lockoutTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // --- EFFECTS (Preserved) ---
   useEffect(() => {
     checkExistingUser();
     checkBiometrics();
+    checkLockoutStatus();
+    
+    return () => {
+      if (lockoutTimerRef.current) {
+        clearInterval(lockoutTimerRef.current);
+      }
+    };
   }, []);
+  
+  // Update remaining lockout time every second
+  useEffect(() => {
+    if (isLockedOut && lockoutEndTime > Date.now()) {
+      lockoutTimerRef.current = setInterval(() => {
+        const remaining = Math.max(0, lockoutEndTime - Date.now());
+        setRemainingLockoutTime(remaining);
+        
+        if (remaining === 0) {
+          setIsLockedOut(false);
+          setFailedAttempts(0);
+          if (lockoutTimerRef.current) {
+            clearInterval(lockoutTimerRef.current);
+          }
+        }
+      }, 1000);
+      
+      return () => {
+        if (lockoutTimerRef.current) {
+          clearInterval(lockoutTimerRef.current);
+        }
+      };
+    }
+  }, [isLockedOut, lockoutEndTime]);
 
   // --- LOGIC FUNCTIONS (Preserved) ---
   const checkExistingUser = async () => {
@@ -111,8 +171,64 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
       setBiometricsAvailable(false);
     }
   };
+  
+  const checkLockoutStatus = async () => {
+    try {
+      const lockoutData = await AsyncStorage.getItem('login_lockout');
+      if (lockoutData) {
+        const { endTime, attempts } = JSON.parse(lockoutData);
+        const now = Date.now();
+        
+        if (endTime > now) {
+          setIsLockedOut(true);
+          setLockoutEndTime(endTime);
+          setRemainingLockoutTime(endTime - now);
+          setFailedAttempts(attempts);
+        } else {
+          // Lockout expired, clear it
+          await AsyncStorage.removeItem('login_lockout');
+          setFailedAttempts(0);
+        }
+      }
+    } catch (error) {
+      console.error('Error checking lockout status:', error);
+    }
+  };
+  
+  const handleFailedAttempt = async () => {
+    const newAttempts = failedAttempts + 1;
+    setFailedAttempts(newAttempts);
+    
+    if (newAttempts >= MAX_LOGIN_ATTEMPTS) {
+      const endTime = Date.now() + LOCKOUT_DURATION;
+      setIsLockedOut(true);
+      setLockoutEndTime(endTime);
+      setRemainingLockoutTime(LOCKOUT_DURATION);
+      
+      // Persist lockout state
+      await AsyncStorage.setItem('login_lockout', JSON.stringify({
+        endTime,
+        attempts: newAttempts
+      }));
+      
+      setError(`Too many failed attempts. Locked out for ${LOCKOUT_DURATION / 1000} seconds.`);
+    } else {
+      setError('Incorrect PIN');
+    }
+  };
+  
+  const resetFailedAttempts = async () => {
+    setFailedAttempts(0);
+    await AsyncStorage.removeItem('login_lockout');
+  };
 
   const handleBiometricLogin = async () => {
+    if (isLockedOut) {
+      const seconds = Math.ceil(remainingLockoutTime / 1000);
+      setError(`Account locked. Please wait ${seconds} second${seconds !== 1 ? 's' : ''}.`);
+      return;
+    }
+    
     try {
       const rnBiometrics = new ReactNativeBiometrics();
       const { success } = await rnBiometrics.simplePrompt({
@@ -122,6 +238,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
 
       if (success) {
         setError('');
+        await resetFailedAttempts();
         onLoginSuccess();
       } else {
         setError('Biometric authentication cancelled');
@@ -160,8 +277,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
       await AsyncStorage.setItem(STORAGE_KEY_ALL_USERS, JSON.stringify(existingUsers));
       await AsyncStorage.setItem(STORAGE_KEY_USERNAME, newUsername);
 
+      // Hash the PIN before storing (username is used as salt)
+      const hashedPin = hashPin(pin, newUsername);
+      
       const serviceName = `${KEYCHAIN_SERVICE}_${newUsername}`;
-      await Keychain.setGenericPassword(newUsername, pin, { service: serviceName });
+      await Keychain.setGenericPassword(newUsername, hashedPin, { service: serviceName });
       
       setUsername('');
       setPin('');
@@ -176,6 +296,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
   };
 
   const handleSignIn = async () => {
+    if (isLockedOut) {
+      const seconds = Math.ceil(remainingLockoutTime / 1000);
+      setError(`Account locked. Please wait ${seconds} second${seconds !== 1 ? 's' : ''}.`);
+      return;
+    }
+    
     if (!pin.trim()) {
       setError('Please enter your PIN');
       return;
@@ -187,16 +313,35 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
         if (currentStored) {
           const serviceName = `${KEYCHAIN_SERVICE}_${currentStored}`;
           const storedCreds = await Keychain.getGenericPassword({ service: serviceName });
-          if (storedCreds && storedCreds.password === pin) {
-            setPin('');
-            setUsername('');
-            setError('');
-            DeviceEventEmitter.emit('userChanged');
-            onLoginSuccess();
-            return;
+          
+          if (storedCreds) {
+            // Hash the entered PIN with username as salt
+            const hashedInputPin = hashPin(pin, currentStored);
+            
+            if (storedCreds.password === hashedInputPin) {
+              setPin('');
+              setUsername('');
+              setError('');
+              await resetFailedAttempts();
+              DeviceEventEmitter.emit('userChanged');
+              onLoginSuccess();
+              return;
+            }
+            
+            // Attempt migration for existing users with plain-text PINs
+            const migrated = await attemptPinMigrationOnLogin(currentStored, pin);
+            if (migrated) {
+              setPin('');
+              setUsername('');
+              setError('');
+              await resetFailedAttempts();
+              DeviceEventEmitter.emit('userChanged');
+              onLoginSuccess();
+              return;
+            }
           }
         }
-        setError('Incorrect PIN');
+        await handleFailedAttempt();
         setPin('');
         return;
       } else {
@@ -205,20 +350,41 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
           return;
         }
 
-        const serviceName = `${KEYCHAIN_SERVICE}_${username.trim()}`;
+        const usernameTrimmed = username.trim();
+        const serviceName = `${KEYCHAIN_SERVICE}_${usernameTrimmed}`;
         const storedCreds = await Keychain.getGenericPassword({ service: serviceName });
 
-        if (storedCreds && storedCreds.password === pin) {
-          await AsyncStorage.setItem(STORAGE_KEY_USERNAME, username.trim());
-          setPin('');
-          setUsername('');
-          setError('');
-          DeviceEventEmitter.emit('userChanged');
-          onLoginSuccess();
-        } else {
-          setError('Incorrect username or PIN');
-          setPin('');
+        if (storedCreds) {
+          // Hash the entered PIN with username as salt
+          const hashedInputPin = hashPin(pin, usernameTrimmed);
+          
+          if (storedCreds.password === hashedInputPin) {
+            await AsyncStorage.setItem(STORAGE_KEY_USERNAME, usernameTrimmed);
+            setPin('');
+            setUsername('');
+            setError('');
+            await resetFailedAttempts();
+            DeviceEventEmitter.emit('userChanged');
+            onLoginSuccess();
+            return;
+          }
+          
+          // Attempt migration for existing users with plain-text PINs
+          const migrated = await attemptPinMigrationOnLogin(usernameTrimmed, pin);
+          if (migrated) {
+            await AsyncStorage.setItem(STORAGE_KEY_USERNAME, usernameTrimmed);
+            setPin('');
+            setUsername('');
+            setError('');
+            await resetFailedAttempts();
+            DeviceEventEmitter.emit('userChanged');
+            onLoginSuccess();
+            return;
+          }
         }
+        
+        await handleFailedAttempt();
+        setPin('');
       }
     } catch (error) {
       console.error('Error during sign in:', error);
@@ -356,8 +522,21 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
             />
           </View>
 
+          {/* Lockout Warning */}
+          {isLockedOut && (
+            <View style={styles.lockoutContainer}>
+              <ShieldCheck size={20} color={palette.warning} />
+              <View style={styles.lockoutTextContainer}>
+                <Text style={styles.lockoutTitle}>Security Lockout Active</Text>
+                <Text style={styles.lockoutText}>
+                  Too many failed attempts. Retry in {Math.ceil(remainingLockoutTime / 1000)}s
+                </Text>
+              </View>
+            </View>
+          )}
+
           {/* Error Message */}
-          {error ? (
+          {error && !isLockedOut ? (
             <View style={styles.errorContainer}>
               <AlertCircle size={16} color={palette.danger} />
               <Text style={styles.errorText}>{error}</Text>
@@ -367,8 +546,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
           {/* Primary Action Button */}
           <TouchableOpacity
             onPress={isSignUpMode ? handleSignUp : handleSignIn}
-            style={styles.primaryButton}
-            activeOpacity={layout.activeOpacity}>
+            style={[
+              styles.primaryButton, 
+              isLockedOut && !isSignUpMode && styles.primaryButtonDisabled
+            ]}
+            activeOpacity={layout.activeOpacity}
+            disabled={isLockedOut && !isSignUpMode}>
             <Text style={styles.primaryButtonText}>
               {isSignUpMode ? 'Initialize Account' : 'Authenticate'}
             </Text>
@@ -379,10 +562,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, isExpl
           {!isSignUpMode && biometricsAvailable && (
             <TouchableOpacity 
               onPress={handleBiometricLogin} 
-              style={styles.bioButton}
-              activeOpacity={layout.activeOpacity}>
-              <Fingerprint size={24} color={palette.accent} />
-              <Text style={styles.bioButtonText}>Biometric Access</Text>
+              style={[styles.bioButton, isLockedOut && styles.bioButtonDisabled]}
+              activeOpacity={layout.activeOpacity}
+              disabled={isLockedOut}>
+              <Fingerprint size={24} color={isLockedOut ? palette.mutedText : palette.accent} />
+              <Text style={[styles.bioButtonText, isLockedOut && styles.bioButtonTextDisabled]}>
+                Biometric Access
+              </Text>
             </TouchableOpacity>
           )}
 
@@ -574,6 +760,54 @@ const styles = StyleSheet.create({
     color: palette.text,
     fontSize: 14,
     fontWeight: '500',
+  },
+  bioButtonDisabled: {
+    opacity: 0.4,
+  },
+  bioButtonTextDisabled: {
+    color: palette.mutedText,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.4,
+  },
+
+  // Security Status
+  lockoutContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(251, 191, 36, 0.1)', // Amber/warning color with opacity
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.3)',
+    borderRadius: 8,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  lockoutTextContainer: {
+    flex: 1,
+  },
+  lockoutTitle: {
+    color: palette.warning || '#f59e0b',
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  lockoutText: {
+    color: palette.warning || '#f59e0b',
+    fontSize: 12,
+  },
+  attemptWarning: {
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderRadius: 6,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    marginBottom: spacing.sm,
+    alignItems: 'center',
+  },
+  attemptWarningText: {
+    color: palette.danger,
+    fontSize: 12,
+    fontWeight: '600',
   },
 
   // Footer

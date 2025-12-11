@@ -234,6 +234,73 @@ class OfflineDataService {
       console.error('Error clearing cache:', error);
     }
   }
+
+  /**
+   * Generate mock technical indicator data for offline/fallback use
+   * Creates realistic-looking technical indicator values based on symbol
+   */
+  getMockTechnicalIndicators(symbol: string): any {
+    // Use symbol characters to seed pseudo-random values for consistency
+    const seed = symbol.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    const rand = (min: number, max: number, offset: number = 0) => {
+      const val = ((seed + offset) % 100) / 100;
+      return min + val * (max - min);
+    };
+
+    const basePrice = REAL_MARKET_PRICES[symbol] || 100;
+    
+    // Generate SMA - typically close to current price
+    const smaValue = basePrice * rand(0.95, 1.05, 1);
+    
+    // Generate RSI - typically between 30-70 for normal conditions
+    const rsiValue = rand(35, 65, 2);
+    
+    // Generate MACD values
+    const macdValue = rand(-2, 2, 3);
+    const signalValue = rand(-1.5, 1.5, 4);
+    const histogramValue = macdValue - signalValue;
+    
+    // Generate ADX - typically between 20-40 for strong trends
+    const adxValue = rand(20, 45, 5);
+
+    return {
+      sma: {
+        symbol,
+        interval: '5m',
+        series_type: 'close',
+        time_period: 50,
+        values: [{ value: smaValue, date: new Date().toISOString() }],
+      },
+      rsi: {
+        symbol,
+        interval: '5m',
+        series_type: 'close',
+        time_period: 14,
+        values: [{ value: rsiValue, date: new Date().toISOString() }],
+      },
+      macd: {
+        symbol,
+        interval: '5m',
+        series_type: 'close',
+        fast_period: 12,
+        slow_period: 26,
+        signal_period: 9,
+        values: [{
+          MACD: macdValue,
+          signal: signalValue,
+          histogram: histogramValue,
+          date: new Date().toISOString(),
+        }],
+      },
+      adx: {
+        symbol,
+        interval: '5m',
+        series_type: 'close',
+        time_period: 14,
+        values: [{ value: adxValue, date: new Date().toISOString() }],
+      },
+    };
+  }
 }
 
 export const offlineDataService = new OfflineDataService();

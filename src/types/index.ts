@@ -78,3 +78,55 @@ export interface EarningsEvent {
   revenueEstimate?: number;
   revenueActual?: number;
 }
+
+// Technical Indicators
+export interface IndicatorDataPoint {
+  date: string;
+  value: number;
+}
+
+export interface SMAIndicator {
+  symbol: string;
+  interval: string;
+  series_type: string;
+  time_period: number;
+  data: IndicatorDataPoint[];
+}
+
+export interface RSIIndicator {
+  symbol: string;
+  interval: string;
+  series_type: string;
+  time_period: number;
+  data: IndicatorDataPoint[];
+}
+
+export interface MACDIndicator {
+  symbol: string;
+  interval: string;
+  series_type: string;
+  fast_period: number;
+  slow_period: number;
+  signal_period: number;
+  data: {
+    date: string;
+    MACD: number;
+    signal: number;
+    histogram: number;
+  }[];
+}
+
+export interface ADXIndicator {
+  symbol: string;
+  interval: string;
+  series_type: string;
+  time_period: number;
+  data: IndicatorDataPoint[];
+}
+
+export interface TechnicalIndicators {
+  sma?: SMAIndicator;
+  rsi?: RSIIndicator;
+  macd?: MACDIndicator;
+  adx?: ADXIndicator;
+}

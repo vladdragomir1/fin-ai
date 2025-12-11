@@ -7,7 +7,8 @@ import {
   BrainCircuit, 
   ChevronRight, 
   LayoutDashboard,
-  TrendingUp
+  TrendingUp,
+  Grid3x3
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -133,7 +134,7 @@ export const HomeScreen = () => {
           <FeatureCard
             title="Browse Stocks"
             description="Explore all listed stocks sorted by market cap."
-            icon={LayoutDashboard}
+            icon={Grid3x3}
             iconColor={palette.warning} // Amber
             bgTint="rgba(245, 158, 11, 0.1)"
             onPress={() => navigation.navigate('BrowseStocks')}

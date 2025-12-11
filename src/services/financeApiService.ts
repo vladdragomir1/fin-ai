@@ -1405,6 +1405,288 @@ class FinanceApiService {
       return [];
     }
   }
+ 
+  /**
+   * Get Simple Moving Average (SMA) indicator
+   * @param symbol Stock symbol
+   * @param interval Time interval (1m, 5m, 15m, 30m, 1h, 1d, 1W, 1M)
+   * @param timePeriod Number of periods for calculation (default: 50)
+   * @param seriesType Price type (close, open, high, low) (default: close)
+   * @param limit Number of data points to return (default: 50)
+   */
+  async getSMAIndicator(
+    symbol: string, 
+    interval: string = '5m',
+    timePeriod: number = 50,
+    seriesType: string = 'close',
+    limit: number = 50
+  ): Promise<any> {
+    await this.ensureInitialized();
+    
+    try {
+      const cacheKey = `indicator_sma_${symbol}_${interval}_${timePeriod}`;
+      
+      // 1. Check cache (1 hour expiration)
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log(`✅ Using cached SMA for ${symbol}`);
+        return cached;
+      }
+      
+      // 2. Fetch from API
+      await this.throttleRequest();
+      console.log(`📊 Fetching SMA indicator for ${symbol}...`);
+      const url = `${this.baseURL}/v1/markets/indicators/sma?symbol=${symbol}&interval=${interval}&series_type=${seriesType}&time_period=${timePeriod}&limit=${limit}`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+      
+      // Check for rate limit or error
+      if (data.message && (data.message.includes('rate limit') || data.message.includes('quota'))) {
+        console.warn(`⚠️ Rate limit hit for SMA - using fallback`);
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) return oldCached;
+        throw new Error('Rate limit - no cache available');
+      }
+      
+      const indicatorData = data.body || data;
+      
+      // 3. Save to cache if valid data
+      if (indicatorData && Object.keys(indicatorData).length > 0) {
+        await databaseService.saveMarketData(cacheKey, indicatorData);
+        console.log(`✅ Cached SMA data for ${symbol}`);
+      }
+      
+      return indicatorData;
+    } catch (error) {
+      console.warn(`Error fetching SMA for ${symbol}:`, error);
+      const cacheKey = `indicator_sma_${symbol}_${interval}_${timePeriod}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) return fallback;
+      return null;
+    }
+  }
+  
+  /**
+   * Get Relative Strength Index (RSI) indicator
+   * @param symbol Stock symbol
+   * @param interval Time interval (1m, 5m, 15m, 30m, 1h, 1d, 1W, 1M)
+   * @param timePeriod Number of periods for calculation (default: 14)
+   * @param seriesType Price type (close, open, high, low) (default: close)
+   * @param limit Number of data points to return (default: 50)
+   */
+  async getRSIIndicator(
+    symbol: string,
+    interval: string = '5m',
+    timePeriod: number = 14,
+    seriesType: string = 'close',
+    limit: number = 50
+  ): Promise<any> {
+    await this.ensureInitialized();
+    
+    try {
+      const cacheKey = `indicator_rsi_${symbol}_${interval}_${timePeriod}`;
+      
+      // 1. Check cache
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log(`✅ Using cached RSI for ${symbol}`);
+        return cached;
+      }
+      
+      // 2. Fetch from API
+      await this.throttleRequest();
+      console.log(`📊 Fetching RSI indicator for ${symbol}...`);
+      const url = `${this.baseURL}/v1/markets/indicators/rsi?symbol=${symbol}&interval=${interval}&series_type=${seriesType}&time_period=${timePeriod}&limit=${limit}`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+      
+      if (data.message && (data.message.includes('rate limit') || data.message.includes('quota'))) {
+        console.warn(`⚠️ Rate limit hit for RSI - using fallback`);
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) return oldCached;
+        throw new Error('Rate limit - no cache available');
+      }
+      
+      const indicatorData = data.body || data;
+      
+      if (indicatorData && Object.keys(indicatorData).length > 0) {
+        await databaseService.saveMarketData(cacheKey, indicatorData);
+        console.log(`✅ Cached RSI data for ${symbol}`);
+      }
+      
+      return indicatorData;
+    } catch (error) {
+      console.warn(`Error fetching RSI for ${symbol}:`, error);
+      const cacheKey = `indicator_rsi_${symbol}_${interval}_${timePeriod}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) return fallback;
+      return null;
+    }
+  }
+  
+  /**
+   * Get MACD (Moving Average Convergence Divergence) indicator
+   * @param symbol Stock symbol
+   * @param interval Time interval (1m, 5m, 15m, 30m, 1h, 1d, 1W, 1M)
+   * @param fastPeriod Fast EMA period (default: 12)
+   * @param slowPeriod Slow EMA period (default: 26)
+   * @param signalPeriod Signal line period (default: 9)
+   * @param seriesType Price type (close, open, high, low) (default: close)
+   * @param limit Number of data points to return (default: 50)
+   */
+  async getMACDIndicator(
+    symbol: string,
+    interval: string = '5m',
+    fastPeriod: number = 12,
+    slowPeriod: number = 26,
+    signalPeriod: number = 9,
+    seriesType: string = 'close',
+    limit: number = 50
+  ): Promise<any> {
+    await this.ensureInitialized();
+    
+    try {
+      const cacheKey = `indicator_macd_${symbol}_${interval}_${fastPeriod}_${slowPeriod}_${signalPeriod}`;
+      
+      // 1. Check cache
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log(`✅ Using cached MACD for ${symbol}`);
+        return cached;
+      }
+      
+      // 2. Fetch from API
+      await this.throttleRequest();
+      console.log(`📊 Fetching MACD indicator for ${symbol}...`);
+      const url = `${this.baseURL}/v1/markets/indicators/macd?symbol=${symbol}&interval=${interval}&series_type=${seriesType}&fast_period=${fastPeriod}&slow_period=${slowPeriod}&signal_period=${signalPeriod}&limit=${limit}`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+      
+      if (data.message && (data.message.includes('rate limit') || data.message.includes('quota'))) {
+        console.warn(`⚠️ Rate limit hit for MACD - using fallback`);
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) return oldCached;
+        throw new Error('Rate limit - no cache available');
+      }
+      
+      const indicatorData = data.body || data;
+      
+      if (indicatorData && Object.keys(indicatorData).length > 0) {
+        await databaseService.saveMarketData(cacheKey, indicatorData);
+        console.log(`✅ Cached MACD data for ${symbol}`);
+      }
+      
+      return indicatorData;
+    } catch (error) {
+      console.warn(`Error fetching MACD for ${symbol}:`, error);
+      const cacheKey = `indicator_macd_${symbol}_${interval}_${fastPeriod}_${slowPeriod}_${signalPeriod}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) return fallback;
+      return null;
+    }
+  }
+  
+  /**
+   * Get ADX (Average Directional Index) indicator
+   * @param symbol Stock symbol
+   * @param interval Time interval (1m, 5m, 15m, 30m, 1h, 1d, 1W, 1M)
+   * @param timePeriod Number of periods for calculation (default: 14)
+   * @param seriesType Price type (close, open, high, low) (default: close)
+   * @param limit Number of data points to return (default: 50)
+   */
+  async getADXIndicator(
+    symbol: string,
+    interval: string = '5m',
+    timePeriod: number = 14,
+    seriesType: string = 'close',
+    limit: number = 50
+  ): Promise<any> {
+    await this.ensureInitialized();
+    
+    try {
+      const cacheKey = `indicator_adx_${symbol}_${interval}_${timePeriod}`;
+      
+      // 1. Check cache
+      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      if (cached) {
+        console.log(`✅ Using cached ADX for ${symbol}`);
+        return cached;
+      }
+      
+      // 2. Fetch from API
+      await this.throttleRequest();
+      console.log(`📊 Fetching ADX indicator for ${symbol}...`);
+      const url = `${this.baseURL}/v1/markets/indicators/adx?symbol=${symbol}&interval=${interval}&series_type=${seriesType}&time_period=${timePeriod}&limit=${limit}`;
+      
+      const response = await fetch(url, { method: 'GET', headers: this.headers });
+      const data = await response.json();
+      
+      if (data.message && (data.message.includes('rate limit') || data.message.includes('quota'))) {
+        console.warn(`⚠️ Rate limit hit for ADX - using fallback`);
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) return oldCached;
+        throw new Error('Rate limit - no cache available');
+      }
+      
+      const indicatorData = data.body || data;
+      
+      if (indicatorData && Object.keys(indicatorData).length > 0) {
+        await databaseService.saveMarketData(cacheKey, indicatorData);
+        console.log(`✅ Cached ADX data for ${symbol}`);
+      }
+      
+      return indicatorData;
+    } catch (error) {
+      console.warn(`Error fetching ADX for ${symbol}:`, error);
+      const cacheKey = `indicator_adx_${symbol}_${interval}_${timePeriod}`;
+      const fallback = await databaseService.getMarketData(cacheKey, Infinity);
+      if (fallback) return fallback;
+      return null;
+    }
+  }
+  
+  /**
+   * Get all technical indicators for a symbol
+   * @param symbol Stock symbol
+   * @param interval Time interval (default: 5m)
+   */
+  async getTechnicalIndicators(symbol: string, interval: string = '5m'): Promise<any> {
+    await this.ensureInitialized();
+    
+    try {
+      // Fetch all indicators in parallel with proper error handling
+      const [sma, rsi, macd, adx] = await Promise.allSettled([
+        this.getSMAIndicator(symbol, interval),
+        this.getRSIIndicator(symbol, interval),
+        this.getMACDIndicator(symbol, interval),
+        this.getADXIndicator(symbol, interval),
+      ]);
+      
+      const results = {
+        sma: sma.status === 'fulfilled' ? sma.value : null,
+        rsi: rsi.status === 'fulfilled' ? rsi.value : null,
+        macd: macd.status === 'fulfilled' ? macd.value : null,
+        adx: adx.status === 'fulfilled' ? adx.value : null,
+      };
+      
+      // If all indicators failed (likely rate limit), return mock data
+      const allFailed = !results.sma && !results.rsi && !results.macd && !results.adx;
+      if (allFailed) {
+        console.log('⚠️ All technical indicators failed, using mock data');
+        return offlineDataService.getMockTechnicalIndicators(symbol);
+      }
+      
+      return results;
+    } catch (error) {
+      console.warn('Error fetching technical indicators:', error);
+      // Fallback to mock data on complete failure
+      console.log('⚠️ Using mock technical indicators due to error');
+      return offlineDataService.getMockTechnicalIndicators(symbol);
+    }
+  }
 }
 
 export const financeApiService = new FinanceApiService();
