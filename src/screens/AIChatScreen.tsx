@@ -230,7 +230,12 @@ export const AIChatScreen = () => {
     });
 
     try {
-      const responseText = await AiService.generateResponse(userText, {});
+      // Build chat history for context (exclude welcome message and current message)
+      const historyForAI = messages
+        .filter(m => m.id !== 'welcome') // Skip welcome message
+        .map(m => ({ text: m.text, sender: m.sender }));
+      
+      const responseText = await AiService.generateResponse(userText, historyForAI);
       const aiMsg: Message = { id: (Date.now() + 1).toString(), text: responseText, sender: 'ai', timestamp: Date.now() };
       
       // Only update UI if user is still looking at THIS chat

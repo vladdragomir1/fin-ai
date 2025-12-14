@@ -17,6 +17,41 @@ import { financeApiService } from './financeApiService';
  * - Watchlist data (user's tracked companies)
  */
 
+/**
+ * Helper: Safely format a number with toFixed
+ * Returns formatted string or fallback if value is not a valid number
+ */
+const safeFixed = (value: any, decimals: number = 2, fallback: string = 'N/A'): string => {
+  if (value === null || value === undefined) return fallback;
+  const num = typeof value === 'string' ? parseFloat(value) : value;
+  if (typeof num !== 'number' || isNaN(num)) return fallback;
+  return num.toFixed(decimals);
+};
+
+/**
+ * Helper: Safely format a large number (divide by billion/million)
+ */
+const safeBillion = (value: any, decimals: number = 2): string => {
+  if (value === null || value === undefined) return 'N/A';
+  const num = typeof value === 'string' ? parseFloat(value) : value;
+  if (typeof num !== 'number' || isNaN(num)) return 'N/A';
+  return (num / 1e9).toFixed(decimals);
+};
+
+const safeMillion = (value: any, decimals: number = 2): string => {
+  if (value === null || value === undefined) return 'N/A';
+  const num = typeof value === 'string' ? parseFloat(value) : value;
+  if (typeof num !== 'number' || isNaN(num)) return 'N/A';
+  return (num / 1e6).toFixed(decimals);
+};
+
+const safePercent = (value: any, decimals: number = 2): string => {
+  if (value === null || value === undefined) return 'N/A';
+  const num = typeof value === 'string' ? parseFloat(value) : value;
+  if (typeof num !== 'number' || isNaN(num)) return 'N/A';
+  return (num * 100).toFixed(decimals);
+};
+
 interface RAGContext {
   companies: string[];
   financialData: any;
@@ -129,7 +164,7 @@ class RAGService {
     // 2. READ from SQLite (Now contains fresh data)
     const data = await databaseService.getCompanyDataForRAG(symbol);
     
-    // Log comprehensive data availability
+    // Log comprehensive data availability (with nested structure awareness)
     console.log(`[RAG] Data retrieved for ${symbol}:`, {
       // Core data
       quote: !!data.quote,
@@ -139,18 +174,19 @@ class RAGService {
       // Extended modules
       financialData: !!data.financialData,
       statistics: !!data.statistics,
-      earnings: data.earnings?.length || 0,
-      recommendations: data.recommendations?.length || 0,
-      insiders: data.insiders?.length || 0,
-      institutions: data.institutions?.length || 0,
+      earnings: data.earnings?.history?.length || (Array.isArray(data.earnings) ? data.earnings.length : 0),
+      recommendations: data.recommendations?.trend?.length || (Array.isArray(data.recommendations) ? data.recommendations.length : 0),
+      // Insider/Institution data (nested in API response)
+      insiders: data.insiders?.holders?.length || (Array.isArray(data.insiders) ? data.insiders.length : 0),
+      institutions: data.institutions?.ownershipList?.length || (Array.isArray(data.institutions) ? data.institutions.length : 0),
       // Financial statements
       incomeStatement: data.incomeStatement?.length || 0,
       balanceSheet: data.balanceSheet?.length || 0,
       cashflowStatement: data.cashflowStatement?.length || 0,
-      // Additional modules
-      secFilings: data.secFilings?.length || 0,
-      upgradeDowngrade: data.upgradeDowngrade?.length || 0,
-      calendarEvents: data.calendarEvents?.length || 0,
+      // Additional modules (nested in API response)
+      secFilings: data.secFilings?.filings?.length || (Array.isArray(data.secFilings) ? data.secFilings.length : 0),
+      upgradeDowngrade: data.upgradeDowngrade?.history?.length || (Array.isArray(data.upgradeDowngrade) ? data.upgradeDowngrade.length : 0),
+      calendarEvents: data.calendarEvents?.earnings ? 'has earnings' : (data.calendarEvents ? 'has data' : 0),
       netSharePurchase: !!data.netSharePurchase,
       indexTrend: !!data.indexTrend,
       // Technical indicators
@@ -188,11 +224,11 @@ class RAGService {
     // Current Quote
     if (data.quote) {
       context += `**Current Market Data**\n`;
-      context += `Price: $${data.quote.price.toFixed(2)}\n`;
-      context += `Change: ${data.quote.change >= 0 ? '+' : ''}${data.quote.change.toFixed(2)} (${data.quote.changePercent.toFixed(2)}%)\n`;
-      context += `Day Range: $${data.quote.low.toFixed(2)} - $${data.quote.high.toFixed(2)}\n`;
-      if (data.quote.open) context += `Open: $${data.quote.open.toFixed(2)}\n`;
-      if (data.quote.previousClose) context += `Previous Close: $${data.quote.previousClose.toFixed(2)}\n`;
+      context += `Price: $${safeFixed(data.quote.price)}\n`;
+      context += `Change: ${data.quote.change >= 0 ? '+' : ''}${safeFixed(data.quote.change)} (${safeFixed(data.quote.changePercent)}%)\n`;
+      context += `Day Range: $${safeFixed(data.quote.low)} - $${safeFixed(data.quote.high)}\n`;
+      if (data.quote.open) context += `Open: $${safeFixed(data.quote.open)}\n`;
+      if (data.quote.previousClose) context += `Previous Close: $${safeFixed(data.quote.previousClose)}\n`;
       // Only show volume if it's available and greater than 0
       if (data.quote.volume && data.quote.volume > 0) {
         context += `Volume: ${data.quote.volume.toLocaleString()}\n`;
@@ -206,16 +242,16 @@ class RAGService {
     // Financial Metrics
     if (data.metrics) {
       context += `**Key Fundamentals**\n`;
-      if (data.metrics.peRatio) context += `P/E Ratio: ${data.metrics.peRatio.toFixed(2)}\n`;
-      if (data.metrics.forwardPE) context += `Forward P/E: ${data.metrics.forwardPE.toFixed(2)}\n`;
-      if (data.metrics.eps) context += `EPS: $${data.metrics.eps.toFixed(2)}\n`;
-      if (data.metrics.forwardEps) context += `Forward EPS: $${data.metrics.forwardEps.toFixed(2)}\n`;
-      if (data.metrics.marketCap) context += `Market Cap: $${(data.metrics.marketCap / 1e9).toFixed(2)} Billion\n`;
-      if (data.metrics.dividendYield) context += `Dividend Yield: ${data.metrics.dividendYield.toFixed(2)}%\n`;
-      if (data.metrics.dividendRate) context += `Dividend Rate: $${data.metrics.dividendRate.toFixed(2)}\n`;
-      if (data.metrics.beta) context += `Beta: ${data.metrics.beta.toFixed(2)}\n`;
-      if (data.metrics.weekHigh52) context += `52-Week High: $${data.metrics.weekHigh52.toFixed(2)}\n`;
-      if (data.metrics.weekLow52) context += `52-Week Low: $${data.metrics.weekLow52.toFixed(2)}\n`;
+      if (data.metrics.peRatio) context += `P/E Ratio: ${safeFixed(data.metrics.peRatio)}\n`;
+      if (data.metrics.forwardPE) context += `Forward P/E: ${safeFixed(data.metrics.forwardPE)}\n`;
+      if (data.metrics.eps) context += `EPS: $${safeFixed(data.metrics.eps)}\n`;
+      if (data.metrics.forwardEps) context += `Forward EPS: $${safeFixed(data.metrics.forwardEps)}\n`;
+      if (data.metrics.marketCap) context += `Market Cap: $${safeBillion(data.metrics.marketCap)} Billion\n`;
+      if (data.metrics.dividendYield) context += `Dividend Yield: ${safeFixed(data.metrics.dividendYield)}%\n`;
+      if (data.metrics.dividendRate) context += `Dividend Rate: $${safeFixed(data.metrics.dividendRate)}\n`;
+      if (data.metrics.beta) context += `Beta: ${safeFixed(data.metrics.beta)}\n`;
+      if (data.metrics.weekHigh52) context += `52-Week High: $${safeFixed(data.metrics.weekHigh52)}\n`;
+      if (data.metrics.weekLow52) context += `52-Week Low: $${safeFixed(data.metrics.weekLow52)}\n`;
       if (data.metrics.avgVolume10Day) context += `10-Day Avg Volume: ${data.metrics.avgVolume10Day.toLocaleString()}\n`;
       context += `\n`;
     }
@@ -225,54 +261,95 @@ class RAGService {
       const recent = data.historical.slice(-5);
       context += `**Recent Price History (Last 5 Days)**\n`;
       recent.forEach((point: any) => {
-        context += `- ${point.date}: $${point.price.toFixed(2)}\n`;
+        context += `- ${point.date}: $${safeFixed(point.price)}\n`;
       });
       context += `\n`;
     }
 
     // Earnings History (if available)
-    if (data.earnings && Array.isArray(data.earnings) && data.earnings.length > 0) {
+    // API returns: { history: [...] } - need to access the nested array
+    const earningsList = data.earnings?.history || (Array.isArray(data.earnings) ? data.earnings : null);
+    if (earningsList && earningsList.length > 0) {
       context += `**Recent Earnings (Last 4 Quarters)**\n`;
-      data.earnings.slice(-4).forEach((earning: any) => {
-        if (earning.date && earning.epsActual) {
-          context += `- ${earning.date}: EPS ${earning.epsActual} (Est: ${earning.epsEstimate || 'N/A'})\n`;
+      earningsList.slice(-4).forEach((earning: any) => {
+        const date = earning.quarterDisplay || earning.date || earning.quarter || 'N/A';
+        const epsActual = earning.epsActual ?? earning.actual;
+        const epsEstimate = earning.epsEstimate ?? earning.estimate;
+        const surprise = earning.epsSurprise ?? earning.surprise;
+        const surprisePct = earning.surprisePercent ?? earning.epsSurprisePercent;
+        
+        context += `- **${date}**: `;
+        if (epsActual !== undefined) context += `EPS $${safeFixed(epsActual)}`;
+        if (epsEstimate !== undefined) context += ` (Est: $${safeFixed(epsEstimate)})`;
+        if (surprisePct !== undefined) {
+          const sign = surprisePct >= 0 ? '+' : '';
+          context += ` | Surprise: ${sign}${safeFixed(surprisePct)}%`;
         }
+        context += `\n`;
       });
       context += `\n`;
     }
 
     // Analyst Recommendations (if available)
-    if (data.recommendations && Array.isArray(data.recommendations) && data.recommendations.length > 0) {
-      const latest = data.recommendations[0];
+    // API returns: { trend: [...] } - need to access the nested array
+    const recommendationList = data.recommendations?.trend || (Array.isArray(data.recommendations) ? data.recommendations : null);
+    if (recommendationList && recommendationList.length > 0) {
+      const latest = recommendationList[0];
       if (latest) {
         context += `**Analyst Recommendations**\n`;
+        const period = latest.period || latest.date || 'Current';
+        context += `Period: ${period}\n`;
         if (latest.strongBuy) context += `Strong Buy: ${latest.strongBuy}\n`;
         if (latest.buy) context += `Buy: ${latest.buy}\n`;
         if (latest.hold) context += `Hold: ${latest.hold}\n`;
         if (latest.sell) context += `Sell: ${latest.sell}\n`;
+        if (latest.strongSell) context += `Strong Sell: ${latest.strongSell}\n`;
         context += `\n`;
       }
     }
 
     // Insider Trading (if available)
-    if (data.insiders && Array.isArray(data.insiders) && data.insiders.length > 0) {
-      context += `**Recent Insider Activity (Last 3 Transactions)**\n`;
-      data.insiders.slice(0, 3).forEach((insider: any) => {
-        if (insider.name && insider.shares) {
-          const action = insider.transactionType || 'Transaction';
-          context += `- ${insider.name}: ${action} ${insider.shares.toLocaleString()} shares\n`;
+    // API returns: { holders: [...] } - need to access the nested array
+    const insiderList = data.insiders?.holders || (Array.isArray(data.insiders) ? data.insiders : null);
+    if (insiderList && insiderList.length > 0) {
+      context += `**Recent Insider Activity (Last 5 Holders)**\n`;
+      insiderList.slice(0, 5).forEach((insider: any) => {
+        const name = insider.name || insider.filerName || 'Unknown';
+        const position = insider.relation || insider.position || '';
+        const shares = insider.positionDirect || insider.shares || insider.latestTransDate;
+        const transactionType = insider.transactionDescription || insider.transactionType || '';
+        
+        context += `- **${name}**`;
+        if (position) context += ` (${position})`;
+        context += `\n`;
+        if (shares && typeof shares === 'number') {
+          context += `  Direct Holdings: ${shares.toLocaleString()} shares\n`;
         }
+        if (transactionType) context += `  Latest: ${transactionType}\n`;
       });
       context += `\n`;
     }
 
     // Institutional Ownership (if available)
-    if (data.institutions && Array.isArray(data.institutions) && data.institutions.length > 0) {
-      context += `**Top Institutional Holders (Top 3)**\n`;
-      data.institutions.slice(0, 3).forEach((inst: any) => {
-        if (inst.holder && inst.shares) {
-          context += `- ${inst.holder}: ${inst.shares.toLocaleString()} shares (${inst.pctHeld?.toFixed(2) || '?'}%)\n`;
+    // API returns: { ownershipList: [...] } - need to access the nested array
+    const institutionList = data.institutions?.ownershipList || (Array.isArray(data.institutions) ? data.institutions : null);
+    if (institutionList && institutionList.length > 0) {
+      context += `**Top Institutional Holders (Top 5)**\n`;
+      institutionList.slice(0, 5).forEach((inst: any) => {
+        const holder = inst.organization || inst.holder || inst.name || 'Unknown';
+        const shares = inst.position || inst.shares || inst.value;
+        const pctHeld = inst.pctHeld || inst.percentHeld;
+        const reportDate = inst.reportDate || '';
+        
+        context += `- **${holder}**`;
+        if (shares && typeof shares === 'number') {
+          context += `: ${shares.toLocaleString()} shares`;
         }
+        if (pctHeld) {
+          context += ` (${safeFixed(pctHeld, 2, '?')}%)`;
+        }
+        if (reportDate) context += ` - as of ${reportDate}`;
+        context += `\n`;
       });
       context += `\n`;
     }
@@ -286,8 +363,8 @@ class RAGService {
         if (data.technicalIndicators.rsi) {
           const rsiValues = Object.values(data.technicalIndicators.rsi);
           const latestRSI: any = rsiValues[rsiValues.length - 1];
-          if (latestRSI?.rsi) {
-            context += `RSI (14): ${latestRSI.rsi.toFixed(2)} - `;
+          if (latestRSI?.rsi && typeof latestRSI.rsi === 'number') {
+            context += `RSI (14): ${safeFixed(latestRSI.rsi)} - `;
             if (latestRSI.rsi > 70) context += `Overbought\n`;
             else if (latestRSI.rsi < 30) context += `Oversold\n`;
             else context += `Neutral\n`;
@@ -296,7 +373,7 @@ class RAGService {
         if (data.technicalIndicators.macd) {
           const macdValues = Object.values(data.technicalIndicators.macd);
           const latestMACD: any = macdValues[macdValues.length - 1];
-          if (latestMACD?.macd && latestMACD?.signal) {
+          if (latestMACD?.macd && latestMACD?.signal && typeof latestMACD.macd === 'number') {
             const signal = latestMACD.macd > latestMACD.signal ? 'Bullish' : 'Bearish';
             context += `MACD: ${signal} signal\n`;
           }
@@ -306,47 +383,102 @@ class RAGService {
     }
 
     // Financial Data (if available) - Profitability & Valuation metrics
+    // API returns: { profitMargins: {fmt, raw}, grossMargins: {fmt, raw}, ... }
     if (data.financialData) {
       const fd = data.financialData;
+      // Helper to extract value (supports both {raw, fmt} and plain values)
+      const getValue = (val: any) => val?.raw ?? val;
+      const getFmt = (val: any) => val?.fmt || null;
+      
       const hasFinancialMetrics = fd.profitMargins || fd.grossMargins || fd.operatingMargins || 
                                    fd.returnOnAssets || fd.returnOnEquity || fd.currentRatio ||
                                    fd.debtToEquity || fd.freeCashflow || fd.revenueGrowth;
       if (hasFinancialMetrics) {
         context += `**Financial Health Metrics**\n`;
-        if (fd.profitMargins) context += `Profit Margin: ${(fd.profitMargins * 100).toFixed(2)}%\n`;
-        if (fd.grossMargins) context += `Gross Margin: ${(fd.grossMargins * 100).toFixed(2)}%\n`;
-        if (fd.operatingMargins) context += `Operating Margin: ${(fd.operatingMargins * 100).toFixed(2)}%\n`;
-        if (fd.returnOnAssets) context += `Return on Assets: ${(fd.returnOnAssets * 100).toFixed(2)}%\n`;
-        if (fd.returnOnEquity) context += `Return on Equity: ${(fd.returnOnEquity * 100).toFixed(2)}%\n`;
-        if (fd.currentRatio) context += `Current Ratio: ${fd.currentRatio.toFixed(2)}\n`;
-        if (fd.debtToEquity) context += `Debt to Equity: ${fd.debtToEquity.toFixed(2)}\n`;
-        if (fd.freeCashflow) context += `Free Cash Flow: $${(fd.freeCashflow / 1e9).toFixed(2)}B\n`;
-        if (fd.revenueGrowth) context += `Revenue Growth: ${(fd.revenueGrowth * 100).toFixed(2)}%\n`;
-        if (fd.earningsGrowth) context += `Earnings Growth: ${(fd.earningsGrowth * 100).toFixed(2)}%\n`;
+        if (fd.profitMargins) context += `Profit Margin: ${getFmt(fd.profitMargins) || safePercent(getValue(fd.profitMargins)) + '%'}\n`;
+        if (fd.grossMargins) context += `Gross Margin: ${getFmt(fd.grossMargins) || safePercent(getValue(fd.grossMargins)) + '%'}\n`;
+        if (fd.operatingMargins) context += `Operating Margin: ${getFmt(fd.operatingMargins) || safePercent(getValue(fd.operatingMargins)) + '%'}\n`;
+        if (fd.returnOnAssets) context += `Return on Assets: ${getFmt(fd.returnOnAssets) || safePercent(getValue(fd.returnOnAssets)) + '%'}\n`;
+        if (fd.returnOnEquity) context += `Return on Equity: ${getFmt(fd.returnOnEquity) || safePercent(getValue(fd.returnOnEquity)) + '%'}\n`;
+        if (fd.currentRatio) context += `Current Ratio: ${getFmt(fd.currentRatio) || safeFixed(getValue(fd.currentRatio))}\n`;
+        if (fd.debtToEquity) context += `Debt to Equity: ${getFmt(fd.debtToEquity) || safeFixed(getValue(fd.debtToEquity))}\n`;
+        if (fd.freeCashflow) context += `Free Cash Flow: ${getFmt(fd.freeCashflow) || '$' + safeBillion(getValue(fd.freeCashflow)) + 'B'}\n`;
+        if (fd.revenueGrowth) context += `Revenue Growth: ${getFmt(fd.revenueGrowth) || safePercent(getValue(fd.revenueGrowth)) + '%'}\n`;
+        if (fd.earningsGrowth) context += `Earnings Growth: ${getFmt(fd.earningsGrowth) || safePercent(getValue(fd.earningsGrowth)) + '%'}\n`;
         if (fd.targetHighPrice && fd.targetLowPrice) {
-          context += `Analyst Price Target: $${fd.targetLowPrice.toFixed(2)} - $${fd.targetHighPrice.toFixed(2)}\n`;
+          const low = getValue(fd.targetLowPrice);
+          const high = getValue(fd.targetHighPrice);
+          context += `Analyst Price Target: $${safeFixed(low)} - $${safeFixed(high)}\n`;
+        }
+        if (fd.targetMeanPrice) {
+          const mean = getValue(fd.targetMeanPrice);
+          context += `Mean Price Target: $${safeFixed(mean)}\n`;
         }
         if (fd.recommendationKey) context += `Analyst Consensus: ${fd.recommendationKey.toUpperCase()}\n`;
+        if (fd.numberOfAnalystOpinions) {
+          const num = getValue(fd.numberOfAnalystOpinions);
+          context += `Number of Analyst Opinions: ${num}\n`;
+        }
         context += `\n`;
       }
     }
 
     // Statistics Module (if available) - Share statistics
+    // API returns: { sharesOutstanding: {fmt, raw}, floatShares: {fmt, raw}, ... }
     if (data.statistics) {
       const stats = data.statistics;
       const hasStats = stats.sharesOutstanding || stats.floatShares || stats.sharesShort ||
                        stats.shortRatio || stats.enterpriseValue || stats.forwardPE;
       if (hasStats) {
         context += `**Share Statistics**\n`;
-        if (stats.sharesOutstanding) context += `Shares Outstanding: ${(stats.sharesOutstanding / 1e9).toFixed(2)}B\n`;
-        if (stats.floatShares) context += `Float Shares: ${(stats.floatShares / 1e9).toFixed(2)}B\n`;
-        if (stats.sharesShort) context += `Shares Short: ${(stats.sharesShort / 1e6).toFixed(2)}M\n`;
-        if (stats.shortRatio) context += `Short Ratio: ${stats.shortRatio.toFixed(2)}\n`;
-        if (stats.shortPercentOfFloat) context += `Short % of Float: ${(stats.shortPercentOfFloat * 100).toFixed(2)}%\n`;
-        if (stats.enterpriseValue) context += `Enterprise Value: $${(stats.enterpriseValue / 1e9).toFixed(2)}B\n`;
-        if (stats.forwardPE) context += `Forward P/E: ${stats.forwardPE.toFixed(2)}\n`;
-        if (stats.pegRatio) context += `PEG Ratio: ${stats.pegRatio.toFixed(2)}\n`;
-        if (stats.priceToBook) context += `Price to Book: ${stats.priceToBook.toFixed(2)}\n`;
+        // Helper to extract value (supports both {raw, fmt} and plain values)
+        const getValue = (val: any) => val?.raw ?? val;
+        const getFmt = (val: any) => val?.fmt || null;
+        
+        if (stats.sharesOutstanding) {
+          const v = getValue(stats.sharesOutstanding);
+          context += `Shares Outstanding: ${getFmt(stats.sharesOutstanding) || safeBillion(v) + 'B'}\n`;
+        }
+        if (stats.floatShares) {
+          const v = getValue(stats.floatShares);
+          context += `Float Shares: ${getFmt(stats.floatShares) || safeBillion(v) + 'B'}\n`;
+        }
+        if (stats.sharesShort) {
+          const v = getValue(stats.sharesShort);
+          context += `Shares Short: ${getFmt(stats.sharesShort) || safeMillion(v) + 'M'}\n`;
+        }
+        if (stats.shortRatio) {
+          const v = getValue(stats.shortRatio);
+          context += `Short Ratio: ${getFmt(stats.shortRatio) || safeFixed(v)}\n`;
+        }
+        if (stats.shortPercentOfFloat) {
+          const v = getValue(stats.shortPercentOfFloat);
+          context += `Short % of Float: ${getFmt(stats.shortPercentOfFloat) || safePercent(v) + '%'}\n`;
+        }
+        if (stats.enterpriseValue) {
+          const v = getValue(stats.enterpriseValue);
+          context += `Enterprise Value: ${getFmt(stats.enterpriseValue) || '$' + safeBillion(v) + 'B'}\n`;
+        }
+        if (stats.forwardPE) {
+          const v = getValue(stats.forwardPE);
+          context += `Forward P/E: ${getFmt(stats.forwardPE) || safeFixed(v)}\n`;
+        }
+        if (stats.pegRatio) {
+          const v = getValue(stats.pegRatio);
+          context += `PEG Ratio: ${getFmt(stats.pegRatio) || safeFixed(v)}\n`;
+        }
+        if (stats.priceToBook) {
+          const v = getValue(stats.priceToBook);
+          context += `Price to Book: ${getFmt(stats.priceToBook) || safeFixed(v)}\n`;
+        }
+        if (stats.enterpriseToRevenue) {
+          const v = getValue(stats.enterpriseToRevenue);
+          context += `EV/Revenue: ${getFmt(stats.enterpriseToRevenue) || safeFixed(v)}\n`;
+        }
+        if (stats.enterpriseToEbitda) {
+          const v = getValue(stats.enterpriseToEbitda);
+          context += `EV/EBITDA: ${getFmt(stats.enterpriseToEbitda) || safeFixed(v)}\n`;
+        }
         context += `\n`;
       }
     }
@@ -359,97 +491,184 @@ class RAGService {
       if (data.incomeStatement && Array.isArray(data.incomeStatement) && data.incomeStatement.length > 0) {
         const latest = data.incomeStatement[0];
         context += `Income Statement (${latest.asOfDate || latest.endDate || 'Latest'}):\n`;
-        if (latest.totalRevenue) context += `  Revenue: $${(latest.totalRevenue / 1e9).toFixed(2)}B\n`;
-        if (latest.grossProfit) context += `  Gross Profit: $${(latest.grossProfit / 1e9).toFixed(2)}B\n`;
-        if (latest.operatingIncome) context += `  Operating Income: $${(latest.operatingIncome / 1e9).toFixed(2)}B\n`;
-        if (latest.netIncome) context += `  Net Income: $${(latest.netIncome / 1e9).toFixed(2)}B\n`;
+        if (latest.totalRevenue) context += `  Revenue: $${safeBillion(latest.totalRevenue)}B\n`;
+        if (latest.grossProfit) context += `  Gross Profit: $${safeBillion(latest.grossProfit)}B\n`;
+        if (latest.operatingIncome) context += `  Operating Income: $${safeBillion(latest.operatingIncome)}B\n`;
+        if (latest.netIncome) context += `  Net Income: $${safeBillion(latest.netIncome)}B\n`;
       }
       
       // Balance Sheet highlights
       if (data.balanceSheet && Array.isArray(data.balanceSheet) && data.balanceSheet.length > 0) {
         const latest = data.balanceSheet[0];
         context += `Balance Sheet (${latest.asOfDate || latest.endDate || 'Latest'}):\n`;
-        if (latest.totalAssets) context += `  Total Assets: $${(latest.totalAssets / 1e9).toFixed(2)}B\n`;
-        if (latest.totalLiabilities) context += `  Total Liabilities: $${(latest.totalLiabilities / 1e9).toFixed(2)}B\n`;
-        if (latest.totalEquity || latest.stockholdersEquity) context += `  Stockholders Equity: $${((latest.totalEquity || latest.stockholdersEquity) / 1e9).toFixed(2)}B\n`;
-        if (latest.cash || latest.cashAndCashEquivalents) context += `  Cash: $${((latest.cash || latest.cashAndCashEquivalents) / 1e9).toFixed(2)}B\n`;
-        if (latest.totalDebt || latest.longTermDebt) context += `  Total Debt: $${((latest.totalDebt || latest.longTermDebt) / 1e9).toFixed(2)}B\n`;
+        if (latest.totalAssets) context += `  Total Assets: $${safeBillion(latest.totalAssets)}B\n`;
+        if (latest.totalLiabilities) context += `  Total Liabilities: $${safeBillion(latest.totalLiabilities)}B\n`;
+        if (latest.totalEquity || latest.stockholdersEquity) context += `  Stockholders Equity: $${safeBillion(latest.totalEquity || latest.stockholdersEquity)}B\n`;
+        if (latest.cash || latest.cashAndCashEquivalents) context += `  Cash: $${safeBillion(latest.cash || latest.cashAndCashEquivalents)}B\n`;
+        if (latest.totalDebt || latest.longTermDebt) context += `  Total Debt: $${safeBillion(latest.totalDebt || latest.longTermDebt)}B\n`;
       }
       
       // Cashflow highlights
       if (data.cashflowStatement && Array.isArray(data.cashflowStatement) && data.cashflowStatement.length > 0) {
         const latest = data.cashflowStatement[0];
         context += `Cash Flow (${latest.asOfDate || latest.endDate || 'Latest'}):\n`;
-        if (latest.operatingCashFlow) context += `  Operating CF: $${(latest.operatingCashFlow / 1e9).toFixed(2)}B\n`;
-        if (latest.capitalExpenditure) context += `  CapEx: $${(latest.capitalExpenditure / 1e9).toFixed(2)}B\n`;
-        if (latest.freeCashFlow) context += `  Free CF: $${(latest.freeCashFlow / 1e9).toFixed(2)}B\n`;
+        if (latest.operatingCashFlow) context += `  Operating CF: $${safeBillion(latest.operatingCashFlow)}B\n`;
+        if (latest.capitalExpenditure) context += `  CapEx: $${safeBillion(latest.capitalExpenditure)}B\n`;
+        if (latest.freeCashFlow) context += `  Free CF: $${safeBillion(latest.freeCashFlow)}B\n`;
       }
       context += `\n`;
     }
 
     // Upgrade/Downgrade History (if available)
-    if (data.upgradeDowngrade && Array.isArray(data.upgradeDowngrade) && data.upgradeDowngrade.length > 0) {
-      context += `**Recent Analyst Actions (Last 3)**\n`;
-      data.upgradeDowngrade.slice(0, 3).forEach((action: any) => {
-        if (action.firm && action.toGrade) {
-          const date = action.date || action.epochGradeDate || '';
-          context += `- ${action.firm}: ${action.action || 'Rating'} to ${action.toGrade}`;
-          if (date) context += ` (${date})`;
-          context += `\n`;
+    // API returns: { history: [...] } - need to access the nested array
+    const upgradeList = data.upgradeDowngrade?.history || (Array.isArray(data.upgradeDowngrade) ? data.upgradeDowngrade : null);
+    if (upgradeList && upgradeList.length > 0) {
+      context += `**Recent Analyst Rating Changes (Last 5)**\n`;
+      upgradeList.slice(0, 5).forEach((action: any) => {
+        const firm = action.firm || action.company || 'Unknown';
+        const toGrade = action.toGrade || action.newGrade || action.grade;
+        const fromGrade = action.fromGrade || action.oldGrade;
+        const actionType = action.action || (fromGrade ? 'Change' : 'Initiate');
+        const date = action.date || action.epochGradeDate || '';
+        
+        context += `- **${firm}**: ${actionType}`;
+        if (fromGrade && toGrade) {
+          context += ` from ${fromGrade} to ${toGrade}`;
+        } else if (toGrade) {
+          context += ` → ${toGrade}`;
         }
+        if (date) context += ` (${date})`;
+        context += `\n`;
       });
       context += `\n`;
     }
 
     // SEC Filings (if available)
-    if (data.secFilings && Array.isArray(data.secFilings) && data.secFilings.length > 0) {
-      context += `**Recent SEC Filings (Last 3)**\n`;
-      data.secFilings.slice(0, 3).forEach((filing: any) => {
-        if (filing.type && filing.date) {
-          context += `- ${filing.type}: Filed ${filing.date}`;
-          if (filing.title) context += ` - ${filing.title.substring(0, 50)}...`;
-          context += `\n`;
-        }
+    // API returns: { filings: [...] } - need to access the nested array
+    const filingsList = data.secFilings?.filings || (Array.isArray(data.secFilings) ? data.secFilings : null);
+    if (filingsList && filingsList.length > 0) {
+      context += `**Recent SEC Filings (Last 5)**\n`;
+      filingsList.slice(0, 5).forEach((filing: any) => {
+        const type = filing.type || filing.formType || 'N/A';
+        const date = filing.date || filing.filedAt || filing.epochDate || '';
+        const title = filing.title || filing.description || '';
+        
+        context += `- **${type}**`;
+        if (date) context += ` (${date})`;
+        if (title) context += `: ${title.substring(0, 60)}${title.length > 60 ? '...' : ''}`;
+        context += `\n`;
       });
       context += `\n`;
     }
 
     // Upcoming Calendar Events (if available)
-    if (data.calendarEvents && Array.isArray(data.calendarEvents) && data.calendarEvents.length > 0) {
-      context += `**Upcoming Events**\n`;
-      data.calendarEvents.slice(0, 3).forEach((event: any) => {
-        if (event.eventName && event.date) {
-          context += `- ${event.eventName}: ${event.date}\n`;
+    // API returns: { earnings: { earningsDate: [...], earningsAverage: {...}, ... }, dividendDate: {...}, exDividendDate: {...} }
+    if (data.calendarEvents && typeof data.calendarEvents === 'object') {
+      const cal = data.calendarEvents;
+      const hasData = cal.earnings || cal.dividendDate || cal.exDividendDate;
+      
+      if (hasData) {
+        context += `**Upcoming Events & Estimates**\n`;
+        
+        // Earnings date
+        if (cal.earnings?.earningsDate?.[0]) {
+          const earningsDate = cal.earnings.earningsDate[0];
+          const dateStr = earningsDate.fmt || (earningsDate.raw ? new Date(earningsDate.raw * 1000).toLocaleDateString() : null);
+          if (dateStr) context += `- **Next Earnings Date**: ${dateStr}\n`;
         }
-      });
-      context += `\n`;
-    }
-
-    // Net Share Purchase Activity (if available)
-    if (data.netSharePurchase) {
-      const activity = data.netSharePurchase;
-      if (activity.netSharesInsiderPurchases || activity.netSharesInstitutionalPurchases) {
-        context += `**Share Purchase Activity**\n`;
-        if (activity.netSharesInsiderPurchases) {
-          context += `Insider Net Purchases: ${activity.netSharesInsiderPurchases.toLocaleString()} shares\n`;
+        
+        // Earnings estimates
+        if (cal.earnings?.earningsAverage?.fmt || cal.earnings?.earningsAverage?.raw) {
+          const avg = cal.earnings.earningsAverage.fmt || `$${safeFixed(cal.earnings.earningsAverage.raw)}`;
+          context += `- **Earnings Estimate (Average)**: ${avg}\n`;
         }
-        if (activity.netSharesInstitutionalPurchases) {
-          context += `Institutional Net Purchases: ${activity.netSharesInstitutionalPurchases.toLocaleString()} shares\n`;
+        if (cal.earnings?.earningsLow?.fmt && cal.earnings?.earningsHigh?.fmt) {
+          context += `- **Earnings Range**: ${cal.earnings.earningsLow.fmt} - ${cal.earnings.earningsHigh.fmt}\n`;
         }
+        
+        // Revenue estimates
+        if (cal.earnings?.revenueAverage?.fmt || cal.earnings?.revenueAverage?.raw) {
+          const rev = cal.earnings.revenueAverage.fmt || `$${safeBillion(cal.earnings.revenueAverage.raw)}B`;
+          context += `- **Revenue Estimate (Average)**: ${rev}\n`;
+        }
+        if (cal.earnings?.revenueLow?.fmt && cal.earnings?.revenueHigh?.fmt) {
+          context += `- **Revenue Range**: ${cal.earnings.revenueLow.fmt} - ${cal.earnings.revenueHigh.fmt}\n`;
+        }
+        
+        // Dividend dates
+        if (cal.dividendDate?.fmt || cal.dividendDate?.raw) {
+          const divDate = cal.dividendDate.fmt || (cal.dividendDate.raw ? new Date(cal.dividendDate.raw * 1000).toLocaleDateString() : null);
+          if (divDate) context += `- **Dividend Date**: ${divDate}\n`;
+        }
+        if (cal.exDividendDate?.fmt || cal.exDividendDate?.raw) {
+          const exDate = cal.exDividendDate.fmt || (cal.exDividendDate.raw ? new Date(cal.exDividendDate.raw * 1000).toLocaleDateString() : null);
+          if (exDate) context += `- **Ex-Dividend Date**: ${exDate}\n`;
+        }
+        
         context += `\n`;
       }
     }
 
-    // Index Trend (if available)
-    if (data.indexTrend && data.indexTrend.estimates) {
-      context += `**Analyst Estimates & Trends**\n`;
-      const estimates = data.indexTrend.estimates;
-      if (estimates.length > 0) {
-        const latest = estimates[0];
-        if (latest.period && latest.growth) {
-          context += `${latest.period}: ${(latest.growth * 100).toFixed(2)}% growth estimate\n`;
+    // Net Share Purchase Activity (if available)
+    // API returns: { buyInfoCount: {fmt, raw}, buyInfoShares: {fmt, raw}, sellInfoCount: {fmt, raw}, sellInfoShares: {fmt, raw}, ... }
+    if (data.netSharePurchase) {
+      const activity = data.netSharePurchase;
+      const hasBuyData = activity.buyInfoCount || activity.buyInfoShares;
+      const hasSellData = activity.sellInfoCount || activity.sellInfoShares;
+      
+      if (hasBuyData || hasSellData) {
+        context += `**Insider Net Share Purchase Activity (Last 6 Months)**\n`;
+        
+        if (hasBuyData) {
+          context += `- **Buys**: `;
+          if (activity.buyInfoCount?.fmt) context += `${activity.buyInfoCount.fmt} transactions`;
+          if (activity.buyInfoShares?.fmt) context += `, ${activity.buyInfoShares.fmt} shares`;
+          if (activity.buyPercentInsiderShares?.fmt) context += ` (${activity.buyPercentInsiderShares.fmt} of insider shares)`;
+          context += `\n`;
         }
+        
+        if (hasSellData) {
+          context += `- **Sells**: `;
+          if (activity.sellInfoCount?.fmt) context += `${activity.sellInfoCount.fmt} transactions`;
+          if (activity.sellInfoShares?.fmt) context += `, ${activity.sellInfoShares.fmt} shares`;
+          if (activity.sellPercentInsiderShares?.fmt) context += ` (${activity.sellPercentInsiderShares.fmt} of insider shares)`;
+          context += `\n`;
+        }
+        
+        // Net totals if available
+        if (activity.netInfoCount?.fmt || activity.netInfoShares?.fmt) {
+          context += `- **Net Activity**: `;
+          if (activity.netInfoCount?.fmt) context += `${activity.netInfoCount.fmt} net transactions`;
+          if (activity.netInfoShares?.fmt) context += `, ${activity.netInfoShares.fmt} net shares`;
+          if (activity.netPercentInsiderShares?.fmt) context += ` (${activity.netPercentInsiderShares.fmt})`;
+          context += `\n`;
+        }
+        
+        context += `\n`;
       }
+    }
+
+    // Index Trend - Growth Estimates (if available)
+    // API returns: { symbol: 'NVDA', estimates: [{ period: '0q', growth: {fmt, raw}}, ...] }
+    if (data.indexTrend && data.indexTrend.estimates && data.indexTrend.estimates.length > 0) {
+      context += `**Growth Estimates & Index Trend**\n`;
+      if (data.indexTrend.symbol) {
+        context += `Symbol: ${data.indexTrend.symbol}\n`;
+      }
+      
+      data.indexTrend.estimates.forEach((est: any) => {
+        if (est.period && (est.growth?.fmt || est.growth?.raw !== undefined)) {
+          const periodName = est.period === '0q' ? 'Current Quarter' 
+                           : est.period === '+1q' ? 'Next Quarter'
+                           : est.period === '0y' ? 'Current Year'
+                           : est.period === '+1y' ? 'Next Year'
+                           : est.period === '+5y' ? '5 Year'
+                           : est.period === '-5y' ? 'Past 5 Years'
+                           : est.period;
+          const growthValue = est.growth?.fmt || `${safePercent(est.growth?.raw || est.growth)}%`;
+          context += `- **${periodName}**: ${growthValue} growth estimate\n`;
+        }
+      });
       context += `\n`;
     }
 
@@ -474,9 +693,9 @@ class RAGService {
       }
 
       context += `**${symbol} (${data.overview?.name || 'Unknown'})**\n`;
-      context += `Price: $${data.quote.price.toFixed(2)}\n`;
-      if (data.metrics?.peRatio) context += `P/E Ratio: ${data.metrics.peRatio.toFixed(2)}\n`;
-      if (data.metrics?.marketCap) context += `Market Cap: $${(data.metrics.marketCap / 1e9).toFixed(2)}B\n`;
+      context += `Price: $${safeFixed(data.quote.price)}\n`;
+      if (data.metrics?.peRatio) context += `P/E Ratio: ${safeFixed(data.metrics.peRatio)}\n`;
+      if (data.metrics?.marketCap) context += `Market Cap: $${safeBillion(data.metrics.marketCap)}B\n`;
       context += `\n`;
     }
 
@@ -662,7 +881,7 @@ class RAGService {
       if (gainers && gainers.length > 0) {
         context += `**Top Gainers (${gainers.length}):**\n`;
         gainers.slice(0, 5).forEach((stock: any) => {
-          context += `- ${stock.symbol} (${stock.shortName || stock.name}): +${stock.regularMarketChangePercent?.toFixed(2) || '0'}%\n`;
+          context += `- ${stock.symbol} (${stock.shortName || stock.name}): +${safeFixed(stock.regularMarketChangePercent, 2, '0')}%\n`;
         });
         context += '\n';
       }
@@ -670,7 +889,7 @@ class RAGService {
       if (losers && losers.length > 0) {
         context += `**Top Losers (${losers.length}):**\n`;
         losers.slice(0, 5).forEach((stock: any) => {
-          context += `- ${stock.symbol} (${stock.shortName || stock.name}): ${stock.regularMarketChangePercent?.toFixed(2) || '0'}%\n`;
+          context += `- ${stock.symbol} (${stock.shortName || stock.name}): ${safeFixed(stock.regularMarketChangePercent, 2, '0')}%\n`;
         });
         context += '\n';
       }
@@ -678,7 +897,7 @@ class RAGService {
       if (mostActive && mostActive.length > 0) {
         context += `**Most Active (${mostActive.length}):**\n`;
         mostActive.slice(0, 5).forEach((stock: any) => {
-          context += `- ${stock.symbol} (${stock.shortName || stock.name}): Vol ${(stock.regularMarketVolume / 1e6)?.toFixed(1) || '0'}M\n`;
+          context += `- ${stock.symbol} (${stock.shortName || stock.name}): Vol ${safeMillion(stock.regularMarketVolume, 1)}M\n`;
         });
         context += '\n';
       }
@@ -688,8 +907,8 @@ class RAGService {
       if (undervalued && undervalued.length > 0) {
         context += `**Undervalued Large Caps (${undervalued.length}):**\n`;
         undervalued.slice(0, 5).forEach((stock: any) => {
-          context += `- ${stock.symbol} (${stock.shortName || stock.name}): $${stock.regularMarketPrice?.toFixed(2) || '0'}`;
-          if (stock.forwardPE) context += ` | Fwd P/E: ${stock.forwardPE.toFixed(2)}`;
+          context += `- ${stock.symbol} (${stock.shortName || stock.name}): $${safeFixed(stock.regularMarketPrice, 2, '0')}`;
+          if (stock.forwardPE) context += ` | Fwd P/E: ${safeFixed(stock.forwardPE)}`;
           context += '\n';
         });
         context += '\n';
@@ -770,7 +989,7 @@ class RAGService {
 
   /**
    * Extract relevant context based on user query
-   * FIXED: Better symbol detection and informative fallback
+   * FIXED: Better symbol detection - prioritize company names, filter common English words
    */
   async extractRelevantContext(query: string): Promise<string> {
     const cleanQuery = query.trim();
@@ -780,17 +999,19 @@ class RAGService {
     console.log(`[RAG] Processing query: "${cleanQuery}"`);
     console.log(`[RAG] Database has ${allSymbols.length} cached symbols:`, allSymbols.slice(0, 10).join(', '));
 
-    // 1. Direct Symbol Match - Look for exact ticker symbols (2-5 uppercase letters)
-    const words = cleanQuery.toUpperCase().split(/\s+/);
-    for (const word of words) {
-      // Check if word matches a cached symbol (must be 2-5 chars and in our DB)
-      if (word.length >= 2 && word.length <= 5 && allSymbols.includes(word)) {
-        console.log(`[RAG] Found direct symbol match: ${word}`);
-        return await this.buildCompanyContext(word);
-      }
-    }
+    // Common English words that happen to be stock symbols - SKIP these in direct matching
+    const commonEnglishWords = new Set([
+      'YOU', 'IT', 'AT', 'BE', 'SO', 'DO', 'GO', 'IS', 'AS', 'OR', 'AN', 'AM', 'ON', 'IN', 
+      'TO', 'UP', 'BY', 'MY', 'NO', 'IF', 'ALL', 'CAN', 'HAS', 'HIM', 'HIS', 'HOW', 'ITS',
+      'MAY', 'NEW', 'NOW', 'OLD', 'OUT', 'OWN', 'SAY', 'SHE', 'THE', 'TOO', 'TWO', 'WAY',
+      'WHO', 'BOY', 'DID', 'GET', 'GOT', 'HER', 'LET', 'MAN', 'MEN', 'PUT', 'RAN', 'RUN',
+      'SEE', 'TEN', 'TOP', 'TRY', 'USE', 'WAS', 'WIN', 'WON', 'YES', 'YET', 'FOR', 'ARE',
+      'BUT', 'NOT', 'ANY', 'OUR', 'DAY', 'HAD', 'ONE', 'BIG', 'CAR', 'GOOD', 'VERY', 'JUST',
+      'OVER', 'SUCH', 'MAKE', 'LIKE', 'WELL', 'BACK', 'ONLY', 'COME', 'KNOW', 'TAKE', 'YEAR',
+      'WHAT', 'WHEN', 'WILL', 'WITH', 'THEM', 'THEN', 'THAN', 'SOME', 'TELL', 'ABOUT', 'REAL'
+    ]);
 
-    // 2. Company Name Match (e.g., "Apple", "Microsoft", "Tesla", "Amazon")
+    // 1. Company Name Match FIRST (e.g., "Apple", "Microsoft", "Tesla", "Amazon", "Nvidia")
     // Use hardcoded mapping for common symbols (faster + no DB dependency)
     const commonCompanies: { [key: string]: string } = {
       'apple': 'AAPL',
@@ -803,6 +1024,50 @@ class RAGService {
       'facebook': 'META',
       'nvidia': 'NVDA',
       'netflix': 'NFLX',
+      'amd': 'AMD',
+      'intel': 'INTC',
+      'broadcom': 'AVGO',
+      'qualcomm': 'QCOM',
+      'adobe': 'ADBE',
+      'salesforce': 'CRM',
+      'oracle': 'ORCL',
+      'ibm': 'IBM',
+      'cisco': 'CSCO',
+      'paypal': 'PYPL',
+      'uber': 'UBER',
+      'airbnb': 'ABNB',
+      'spotify': 'SPOT',
+      'snap': 'SNAP',
+      'twitter': 'X',
+      'disney': 'DIS',
+      'walmart': 'WMT',
+      'costco': 'COST',
+      'target': 'TGT',
+      'nike': 'NKE',
+      'starbucks': 'SBUX',
+      'mcdonalds': 'MCD',
+      "mcdonald's": 'MCD',
+      'coca-cola': 'KO',
+      'cocacola': 'KO',
+      'coke': 'KO',
+      'pepsi': 'PEP',
+      'pepsico': 'PEP',
+      'boeing': 'BA',
+      'ford': 'F',
+      'gm': 'GM',
+      'general motors': 'GM',
+      'chevron': 'CVX',
+      'exxon': 'XOM',
+      'exxonmobil': 'XOM',
+      'jpmorgan': 'JPM',
+      'jp morgan': 'JPM',
+      'goldman': 'GS',
+      'goldman sachs': 'GS',
+      'berkshire': 'BRK-B',
+      'visa': 'V',
+      'mastercard': 'MA',
+      'american express': 'AXP',
+      'amex': 'AXP',
     };
     
     for (const [companyName, symbol] of Object.entries(commonCompanies)) {
@@ -811,59 +1076,44 @@ class RAGService {
         return await this.buildCompanyContext(symbol);
       }
     }
+
+    // 2. Direct Symbol Match - Look for exact ticker symbols (2-5 uppercase letters)
+    // ONLY if NOT a common English word
+    const words = cleanQuery.toUpperCase().split(/\s+/);
+    for (const word of words) {
+      // Check if word matches a cached symbol (must be 2-5 chars, in our DB, and NOT a common word)
+      if (word.length >= 2 && word.length <= 5 && 
+          allSymbols.includes(word) && 
+          !commonEnglishWords.has(word)) {
+        console.log(`[RAG] Found direct symbol match: ${word}`);
+        return await this.buildCompanyContext(word);
+      }
+    }
     
-    // Check company overview (includes full name) for other companies
+    // 3. Check company overview (includes full name) for other companies
     for (const sym of allSymbols) {
       const overview = await databaseService.getCompanyOverview(sym);
       if (overview && overview.name) {
         const companyWords = overview.name.toLowerCase().split(/[\s,]+/);
         for (const companyWord of companyWords) {
-          // Match significant words (3+ chars)
-          if (companyWord.length >= 3 && queryLower.includes(companyWord)) {
+          // Match significant words (4+ chars to avoid false positives)
+          if (companyWord.length >= 4 && queryLower.includes(companyWord)) {
             console.log(`[RAG] Found company name match: ${overview.name} (${sym})`);
             return await this.buildCompanyContext(sym);
           }
         }
       }
-      
-      // If no overview, check if symbol name itself matches (case-insensitive)
-      if (sym.length <= 5 && queryLower.includes(sym.toLowerCase())) {
-        console.log(`[RAG] Found symbol in query text: ${sym}`);
-        return await this.buildCompanyContext(sym);
-      }
     }
 
-    // 3. Multiple symbols mentioned - Comparison
-    const foundSymbols = allSymbols.filter(sym => cleanQuery.toUpperCase().includes(sym));
-    if (foundSymbols.length >= 2) {
-      console.log(`[RAG] Found comparison request: ${foundSymbols.join(', ')}`);
-      return await this.buildComparisonContext(foundSymbols);
-    }
-
-    // 4. Watchlist queries - special handling
-    const watchlistKeywords = ['watchlist', 'portfolio', 'my stocks', 'my companies'];
-    if (watchlistKeywords.some(k => queryLower.includes(k))) {
-      console.log(`[RAG] Detected watchlist query`);
-      // Extract any company names mentioned with watchlist
-      for (const sym of allSymbols) {
-        if (queryLower.includes(sym.toLowerCase())) {
-          console.log(`[RAG] Found symbol in watchlist query: ${sym}`);
-          return await this.buildCompanyContext(sym);
-        }
-        // Check company names
-        const overview = await databaseService.getCompanyOverview(sym);
-        if (overview && overview.name) {
-          const nameWords = overview.name.toLowerCase().split(/[\s,]+/);
-          for (const nameWord of nameWords) {
-            if (nameWord.length >= 4 && queryLower.includes(nameWord)) {
-              console.log(`[RAG] Found company in watchlist query: ${overview.name} (${sym})`);
-              return await this.buildCompanyContext(sym);
-            }
-          }
-        }
+    // 4. Calendar/Market queries - check BEFORE comparison to avoid false matches
+    // IPO/Splits/Dividends queries
+    const calendarKeywords = ['ipo', 'ipos', 'split', 'splits', 'dividend', 'dividends', 'offering', 'offerings'];
+    if (calendarKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] Detected calendar/IPO/splits query`);
+      const calendarData = await this.getMarketCalendarData();
+      if (calendarData) {
+        return `### Market Calendar & Events\n\n${calendarData}\n\nThe user asked: "${cleanQuery}"`;
       }
-      // If no specific company, show all watchlist
-      return await this.buildMarketContext();
     }
 
     // 5. News-specific queries
@@ -896,21 +1146,42 @@ class RAGService {
       }
     }
 
-    // 8. Market Overview Keywords
+    // 8. Multiple symbols mentioned - Comparison (only match WHOLE words, not substrings)
+    // Use word boundary regex to avoid matching "perForming" as F, "stocK" as K, etc.
+    const foundSymbols = allSymbols.filter(sym => {
+      if (commonEnglishWords.has(sym)) return false;
+      // For single-char symbols, require exact word match
+      // For multi-char symbols, check word boundaries
+      const wordBoundaryRegex = new RegExp(`\\b${sym}\\b`, 'i');
+      return wordBoundaryRegex.test(cleanQuery.toUpperCase());
+    });
+    if (foundSymbols.length >= 2) {
+      console.log(`[RAG] Found comparison request: ${foundSymbols.join(', ')}`);
+      return await this.buildComparisonContext(foundSymbols);
+    }
+
+    // 9. Watchlist queries - special handling
+    const watchlistKeywords = ['watchlist', 'portfolio', 'my stocks', 'my companies'];
+    if (watchlistKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] Detected watchlist query`);
+      return await this.buildMarketContext();
+    }
+
+    // 10. Market Overview Keywords
     const marketKeywords = ['market', 'overview', 'sector', 'industry', 'trends', 'summary'];
     if (marketKeywords.some(k => queryLower.includes(k))) {
       console.log(`[RAG] Building comprehensive market overview context`);
       return await this.buildMarketContext();
     }
 
-    // 9. General questions with available data
+    // 11. General questions with available data
     if (allSymbols.length > 0) {
       console.log(`[RAG] No specific match, showing available companies`);
       const preview = await this.buildMarketContext();
       return `${preview}\n\n**Available Companies:** ${allSymbols.slice(0, 20).join(', ')}${allSymbols.length > 20 ? ` and ${allSymbols.length - 20} more...` : ''}\n\nThe user asked: "${cleanQuery}"`;
     }
 
-    // 10. No data available
+    // 12. No data available
     console.log(`[RAG] No cached data available`);
     return `**System Status:** The knowledge base is currently empty. No companies have been searched yet.\n\n**To get started:**\n1. Search for a company (e.g., AAPL, MSFT, TSLA)\n2. Browse stocks in the app\n3. Add companies to your watchlist\n4. Check Market Movers or Statistics screens\n\nThen I'll be able to provide detailed financial analysis!\n\nUser asked: "${cleanQuery}"`;
   }
@@ -918,8 +1189,10 @@ class RAGService {
   /**
    * Format prompt for LFM2-1.2B-RAG
    * Uses ChatML format optimized for document-based question answering
+   * @param userQuery - Current user question
+   * @param chatHistory - Formatted conversation history (optional)
    */
-  async formatPromptForLLM(userQuery: string): Promise<string> {
+  async formatPromptForLLM(userQuery: string, chatHistory: string = ''): Promise<string> {
     const context = await this.extractRelevantContext(userQuery);
     
     const date = new Date().toISOString().split('T')[0];
@@ -933,14 +1206,14 @@ You are FinAI, an expert financial analyst. Always respond in English. Current D
 Use the following context to answer questions:
 
 ${context}
-
+${chatHistory}
 ---
 
 Question: ${userQuery}<|im_end|>
 <|im_start|>assistant
 `;
 
-    console.log('[RAG] Prompt length:', prompt.length);
+    console.log('[RAG] Prompt length:', prompt.length, 'chars (~', Math.ceil(prompt.length / 4), 'tokens)');
     console.log('[RAG] Context preview:', context.substring(0, 200) + '...');
     
     return prompt;

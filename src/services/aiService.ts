@@ -3,6 +3,10 @@ import { databaseService } from './databaseService';
 import { LlamaContext, initLlama } from 'llama.rn';
 import RNFS from 'react-native-fs';
 
+// --- Chat History Configuration ---
+const MAX_HISTORY_MESSAGES = 20;     // Keep last 20 messages for context
+const MAX_HISTORY_TOKENS = 3000;     // Approx token limit for history (leaves room for RAG + response)
+
 // 1. Setup Model Path
 const MODEL_FILENAME = 'lfm2-1.2b-q8_0.gguf';
 const MODEL_PATH = `${RNFS.ExternalDirectoryPath}/${MODEL_FILENAME}`;
@@ -33,7 +37,7 @@ export const AiService = {
       console.log('Loading Local LLM...');
       this.context = await initLlama({
         model: MODEL_PATH,
-        n_ctx: 2048,   
+        n_ctx: 8192,   // Increased from 2048 for longer conversations (pro level)
         n_threads: 4,     
         n_gpu_layers: 0,  
       });
@@ -49,8 +53,10 @@ export const AiService = {
 
   /**
    * Main function: Generate response using RAG + Local LLM
+   * @param userPrompt - Current user message
+   * @param chatHistory - Previous messages for conversation context (optional)
    */
-  async generateResponse(userPrompt: string, _unusedContext?: any): Promise<string> {
+  async generateResponse(userPrompt: string, chatHistory?: Array<{text: string, sender: 'user' | 'ai'}>): Promise<string> {
     try {
       console.log(`[AI] Received query: "${userPrompt}"`);
       
@@ -73,7 +79,32 @@ export const AiService = {
       if (!this.context) throw new Error("AI Context lost");
 
       // 2. Get RAG Context (Stock Data from SQLite/API)
-      const fullPrompt = await ragService.formatPromptForLLM(userPrompt);
+      // Format chat history for context (keeps conversation flowing naturally)
+      let historyContext = '';
+      if (chatHistory && chatHistory.length > 0) {
+        // Take only recent messages and limit by approximate tokens
+        const recentHistory = chatHistory.slice(-MAX_HISTORY_MESSAGES);
+        let historyText = '';
+        
+        for (const msg of recentHistory) {
+          const role = msg.sender === 'user' ? 'User' : 'Assistant';
+          // Skip very long messages to preserve token budget
+          const text = msg.text.length > 500 ? msg.text.substring(0, 500) + '...' : msg.text;
+          historyText += `${role}: ${text}\n`;
+          
+          // Approximate token count (1 token ≈ 4 chars)
+          if (historyText.length > MAX_HISTORY_TOKENS * 4) {
+            console.log('[AI] Chat history truncated to fit context window');
+            break;
+          }
+        }
+        
+        if (historyText) {
+          historyContext = `\n### Previous Conversation:\n${historyText}\n`;
+        }
+      }
+      
+      const fullPrompt = await ragService.formatPromptForLLM(userPrompt, historyContext);
       
       console.log(`[AI] Starting LFM2 inference...`);
       const startTime = Date.now();
@@ -154,15 +185,24 @@ Generate a 3-5 word title for this chat:
         stop: ['<|im_end|>', '<|endoftext|>', '\n\n'],
       });
 
-      // Clean up the result
+      // Clean up the result - remove markdown, quotes, and artifacts
       let title = result.text.trim()
-        .replace(/^["']|["']$/g, '') // Remove quotes
-        .replace(/\n.*/g, '') // Remove everything after first newline
+        .replace(/^["']|["']$/g, '')          // Remove surrounding quotes
+        .replace(/\*\*/g, '')                  // Remove bold markdown **
+        .replace(/\*/g, '')                    // Remove italic markdown *
+        .replace(/^#+\s*/g, '')                // Remove heading markdown #
+        .replace(/^\s*[-•]\s*/g, '')           // Remove bullet points
+        .replace(/\n.*/g, '')                  // Remove everything after first newline
+        .replace(/^(Title|Chat|Response|AI):\s*/i, '')  // Remove common prefixes
         .trim();
 
-      // Fallback if title is too long or empty
-      if (!title || title.length > 50) {
-        title = userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : '');
+      // Fallback if title is empty, too long, or contains unwanted patterns
+      const badPatterns = ['AI Response', 'Assistant', 'Here is', 'Based on', 'The user'];
+      if (!title || title.length > 50 || title.length < 3 || 
+          badPatterns.some(p => title.toLowerCase().includes(p.toLowerCase()))) {
+        // Create a smart fallback from user message
+        const words = userMessage.split(/\s+/).slice(0, 5);
+        title = words.join(' ') + (userMessage.split(/\s+/).length > 5 ? '...' : '');
       }
 
       console.log(`[AI] Generated title: "${title}"`);
