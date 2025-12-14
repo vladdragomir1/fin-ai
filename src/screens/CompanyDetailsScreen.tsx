@@ -21,10 +21,11 @@ import {
   AlertCircle // Added for empty state
 } from 'lucide-react-native';
 
-import { ScreenShell, TradingViewChart } from '@/components';
+import { ScreenShell, TradingViewChart, DataFreshnessBadge } from '@/components';
 import { financeApiService } from '@/services/financeApiService';
+import { tradingViewPriceService } from '@/services/tradingViewPriceService';
 import { palette, spacing, layout } from '@/theme';
-import { formatCurrency } from '@/utils';
+import { formatCurrency, getMarketStatus } from '@/utils';
 import type { ChartDataPoint, CompanyOverview, FinancialMetrics, StockQuote } from '@/types';
 import type { RootStackParamList } from '@/navigation/types';
 
@@ -72,6 +73,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
   const [quote, setQuote] = useState<StockQuote | null>(null);
   const [overview, setOverview] = useState<CompanyOverview | null>(null);
   const [metrics, setMetrics] = useState<FinancialMetrics | null>(null);
+  const [tvPrice, setTvPrice] = useState<{price: number, change: number, changePercent: number} | null>(null);
   
   // Additional Data Modules
   const [calendarEvents, setCalendarEvents] = useState<any>(null);
@@ -95,7 +97,18 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
 
   useEffect(() => {
     loadCompanyData();
+    
+    // Check if we have a cached TradingView price from previous visit
+    const cachedPrice = tradingViewPriceService.getPrice(symbol);
+    if (cachedPrice) {
+      setTvPrice(cachedPrice);
+    }
   }, [symbol]);
+
+  // Callback to receive price updates from TradingView
+  const handleTradingViewPriceUpdate = (price: number, change: number, changePercent: number) => {
+    setTvPrice({ price, change, changePercent });
+  };
 
   const handleRangeChange = async (range: AllowedRange) => {
     if (range === selectedRange) return;
@@ -178,22 +191,6 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         setIndexTrend(indexTrendData);
         setNetSharePurchase(netSharePurchaseData);
         setTechnicalIndicators(technicalIndicatorsData);
-        
-        // Detailed logging for troubleshooting
-        console.log('📊 MODULE LOAD RESULTS FOR', symbol);
-        console.log('  ✓ Calendar Events:', calendarData ? 'LOADED' : '❌ NULL');
-        console.log('  ✓ Earnings History:', earningsHistoryData?.history?.length || 0, 'entries');
-        console.log('  ✓ Income Statement:', incomeData ? 'LOADED' : '❌ NULL');
-        console.log('  ✓ Balance Sheet:', balanceData ? 'LOADED' : '❌ NULL');
-        console.log('  ✓ Cashflow Statement:', cashflowData ? 'LOADED' : '❌ NULL');
-        console.log('  ✓ Institution Ownership:', institutionData?.ownershipList?.length || 0, 'entries');
-        console.log('  ✓ Insider Holders:', insiderHoldersData?.holders?.length || 0, 'entries');
-        console.log('  ✓ Recommendation Trend:', recommendationData?.trend?.length || 0, 'entries');
-        console.log('  ✓ Upgrade/Downgrade:', upgradeDowngradeData?.history?.length || 0, 'entries');
-        console.log('  ✓ SEC Filings:', secFilingsData?.filings?.length || 0, 'entries');
-        console.log('  ✓ Index Trend:', indexTrendData ? 'LOADED' : '❌ NULL');
-        console.log('  ✓ Net Share Purchase:', netSharePurchaseData ? 'LOADED' : '❌ NULL');
-        console.log('  ✓ Technical Indicators:', technicalIndicatorsData ? 'LOADED' : '❌ NULL');
       }).catch(err => {
         console.error('❌ Additional modules failed to load:', err);
       });
@@ -215,7 +212,10 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
     );
   }
 
-  const isPositive = (quote?.change ?? 0) >= 0;
+  // Use TradingView price if available, otherwise use API quote
+  const displayPrice = tvPrice || (quote ? { price: quote.price, change: quote.change, changePercent: quote.changePercent } : null);
+  
+  const isPositive = (displayPrice?.changePercent ?? 0) >= 0;
   const ChangeIcon = isPositive ? TrendingUp : TrendingDown;
   const changeColor = isPositive ? palette.success : palette.danger;
 
@@ -232,21 +232,41 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
             <Text style={styles.companyName} numberOfLines={1}>{name}</Text>
           </View>
 
-          {quote && (
+          {displayPrice && (
             <View style={styles.heroSection}>
-              <Text style={styles.price}>${quote.price.toFixed(2)}</Text>
+              <Text style={styles.price}>${displayPrice.price.toFixed(2)}</Text>
               <View style={[styles.changeBadge, { backgroundColor: isPositive ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)' }]}>
                 <ChangeIcon size={16} color={changeColor} />
                 <Text style={[styles.changeText, { color: changeColor }]}>
-                  {isPositive ? '+' : ''}{quote.change.toFixed(2)} ({quote.changePercent.toFixed(2)}%)
+                  {isPositive ? '+' : ''}{displayPrice.change.toFixed(2)} ({displayPrice.changePercent.toFixed(2)}%)
                 </Text>
               </View>
             </View>
           )}
           
-          <Text style={styles.timestamp}>
-            <Clock size={10} color={palette.mutedText} /> Market Open • Delayed 15m
-          </Text>
+          {/* Market Status & Data Freshness */}
+          <View style={styles.statusRow}>
+            <View style={styles.marketStatusBadge}>
+              <Clock size={10} color={palette.mutedText} />
+              <Text style={styles.marketStatusText}>
+                {tvPrice ? 'Real-time' : getMarketStatus() === 'open' ? 'Delayed 15m' : 'Market Closed'}
+              </Text>
+            </View>
+            {quote?.cachedAt && !tvPrice && (
+              <DataFreshnessBadge 
+                cachedAt={quote.cachedAt} 
+                isLive={false}
+                compact
+              />
+            )}
+            {tvPrice && (
+              <DataFreshnessBadge 
+                cachedAt={Date.now()} 
+                isLive={true}
+                compact
+              />
+            )}
+          </View>
         </View>
 
         {/* 2. Chart Section */}
@@ -264,7 +284,8 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
              ) : chartData.length > 0 ? (
                 <TradingViewChart 
                   symbol={symbol} 
-                  height={280} 
+                  height={280}
+                  onPriceUpdate={handleTradingViewPriceUpdate}
                 />
              ) : (
                 <View style={styles.chartCenterInfo}>
@@ -837,11 +858,11 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                   </>
                 )}
               </View>
-              {overview.description && (
-                <View style={styles.descContainer}>
-                    <Text style={styles.description}>{overview.description}</Text>
-                </View>
-              )}
+              <View style={styles.descContainer}>
+                <Text style={styles.description}>
+                  {overview.description || 'No description available.'}
+                </Text>
+              </View>
             </View>
           </View>
         )}
@@ -923,10 +944,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-  timestamp: {
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    marginTop: spacing.xs,
+    gap: spacing.sm,
+  },
+  marketStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  marketStatusText: {
     color: palette.mutedText,
-    fontSize: 12,
-    marginTop: 4,
+    fontSize: 11,
+    fontWeight: '500',
   },
 
   // Chart

@@ -1,24 +1,93 @@
-import React from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import { 
   Star, 
   TrendingUp, 
+  TrendingDown,
   BookmarkMinus, 
   Info, 
   ArrowUpRight 
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { ScreenShell } from '@/components';
+import { ScreenShell, DataFreshnessBadge } from '@/components';
 import { useWatchlist } from '@/context/WatchlistContext';
+import { financeApiService } from '@/services/financeApiService';
+import { tradingViewPriceService } from '@/services/tradingViewPriceService';
 import { palette, spacing, layout } from '@/theme';
 import type { RootStackParamList } from '@/navigation/types';
+import type { StockQuote } from '@/types';
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
+
+interface WatchlistItemWithQuote {
+  symbol: string;
+  name: string;
+  quote?: StockQuote;
+  loading?: boolean;
+}
 
 export const WatchlistScreen = () => {
   const navigation = useNavigation<NavigationProp>();
   const { watchlist, removeFromWatchlist } = useWatchlist();
+  const [itemsWithQuotes, setItemsWithQuotes] = useState<WatchlistItemWithQuote[]>([]);
+
+  useEffect(() => {
+    // Initialize items with loading state
+    setItemsWithQuotes(watchlist.map(item => ({ ...item, loading: true })));
+    
+    // Fetch quotes for all watchlist items
+    const fetchQuotes = async () => {
+      const quotesPromises = watchlist.map(async (item) => {
+        try {
+          const quote = await financeApiService.getStockQuote(item.symbol);
+          return { ...item, quote: quote || undefined, loading: false };
+        } catch (error) {
+          console.error(`Error fetching quote for ${item.symbol}:`, error);
+          return { ...item, loading: false };
+        }
+      });
+
+      const results = await Promise.all(quotesPromises);
+      setItemsWithQuotes(results);
+    };
+
+    if (watchlist.length > 0) {
+      fetchQuotes();
+    }
+
+    // Poll for TradingView price updates
+    const interval = setInterval(() => {
+      // Update items with TradingView prices if available
+      setItemsWithQuotes(current => 
+        current.map(item => {
+          const tvPrice = tradingViewPriceService.getPrice(item.symbol);
+          if (tvPrice && !item.quote) {
+            // Use TradingView price if API quote not available
+            return {
+              ...item,
+              quote: {
+                symbol: item.symbol,
+                price: tvPrice.price,
+                change: tvPrice.change,
+                changePercent: tvPrice.changePercent,
+                volume: 0,
+                high: 0,
+                low: 0,
+                open: 0,
+                previousClose: 0,
+                timestamp: new Date().toISOString(),
+              },
+              loading: false,
+            };
+          }
+          return item;
+        })
+      );
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [watchlist]);
 
   const handleSelectCompany = (symbol: string, name: string) => {
     navigation.navigate('CompanyDetails', { symbol, name });
@@ -66,44 +135,70 @@ export const WatchlistScreen = () => {
 
       {/* List */}
       <FlatList
-        data={watchlist}
+        data={itemsWithQuotes}
         keyExtractor={item => item.symbol}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
-        renderItem={({ item }) => (
-          <TouchableOpacity 
-            onPress={() => handleSelectCompany(item.symbol, item.name)}
-            style={styles.card}
-            activeOpacity={layout.activeOpacity}
-          >
-            {/* Icon Box */}
-            <View style={styles.tickerBox}>
-              <TrendingUp size={20} color={palette.text} strokeWidth={1.5} />
-            </View>
+        renderItem={({ item }) => {
+          const isPositive = (item.quote?.changePercent || 0) >= 0;
+          const TrendIcon = isPositive ? TrendingUp : TrendingDown;
+          const changeColor = isPositive ? palette.success : palette.danger;
 
-            {/* Content */}
-            <View style={styles.cardContent}>
-              <View style={styles.symbolRow}>
-                <Text style={styles.symbol}>{item.symbol}</Text>
-                <ArrowUpRight size={14} color={palette.mutedText} />
-              </View>
-              <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
-            </View>
-
-            {/* Action (Remove) */}
+          return (
             <TouchableOpacity 
-              onPress={() => removeFromWatchlist(item.symbol)}
-              style={styles.actionButton}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              onPress={() => handleSelectCompany(item.symbol, item.name)}
+              style={styles.card}
+              activeOpacity={layout.activeOpacity}
             >
-              <Star 
-                size={20} 
-                color={palette.warning} 
-                fill={palette.warning} 
-              />
+              {/* Icon Box */}
+              <View style={styles.tickerBox}>
+                <TrendIcon size={20} color={palette.text} strokeWidth={1.5} />
+              </View>
+
+              {/* Content */}
+              <View style={styles.cardContent}>
+                <View style={styles.symbolRow}>
+                  <Text style={styles.symbol}>{item.symbol}</Text>
+                  <ArrowUpRight size={14} color={palette.mutedText} />
+                </View>
+                <View style={styles.nameRow}>
+                  <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
+                  {item.quote?.cachedAt && (
+                    <DataFreshnessBadge cachedAt={item.quote.cachedAt} compact />
+                  )}
+                </View>
+              </View>
+
+              {/* Price & Change */}
+              {item.loading ? (
+                <ActivityIndicator size="small" color={palette.mutedText} style={styles.priceLoader} />
+              ) : item.quote ? (
+                <View style={styles.priceSection}>
+                  <Text style={styles.priceValue}>${item.quote.price.toFixed(2)}</Text>
+                  <View style={[styles.changeBadge, { backgroundColor: isPositive ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)' }]}>
+                    <TrendIcon size={10} color={changeColor} />
+                    <Text style={[styles.changeText, { color: changeColor }]}>
+                      {isPositive ? '+' : ''}{item.quote.changePercent.toFixed(2)}%
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
+
+              {/* Action (Remove) */}
+              <TouchableOpacity 
+                onPress={() => removeFromWatchlist(item.symbol)}
+                style={styles.actionButton}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Star 
+                  size={20} 
+                  color={palette.warning} 
+                  fill={palette.warning} 
+                />
+              </TouchableOpacity>
             </TouchableOpacity>
-          </TouchableOpacity>
-        )}
+          );
+        }}
       />
     </View>
   );
@@ -239,13 +334,47 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   name: {
     color: palette.mutedText,
     fontSize: 13,
+    flex: 1,
   },
   actionButton: {
     padding: spacing.sm,
     backgroundColor: 'rgba(245, 158, 11, 0.1)', // Very subtle amber tint
     borderRadius: 10,
+    marginLeft: spacing.sm,
+  },
+  
+  // Price Display
+  priceSection: {
+    alignItems: 'flex-end',
+    marginRight: spacing.sm,
+    gap: 4,
+  },
+  priceValue: {
+    color: palette.text,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  changeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    gap: 4,
+  },
+  changeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  priceLoader: {
+    marginRight: spacing.sm,
   },
 });

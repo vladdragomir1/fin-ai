@@ -8,6 +8,7 @@ import {
 import { databaseService } from './databaseService';
 import { offlineDataService } from './offlineDataService';
 import { FINANCIAL_API_KEY, FINANCIAL_API_HOST } from '@env';
+import { isMarketOpen, getMarketStatus } from '@/utils/marketHours';
 
 class FinanceApiService {
   private initialized = false;
@@ -38,6 +39,26 @@ class FinanceApiService {
     }
     
     this.lastRequestTime = Date.now();
+  }
+
+  // Helper: Check HTTP response for rate limit (429) before parsing JSON
+  private async checkRateLimitAndParse(response: Response): Promise<any> {
+    // Check for HTTP 429 (Too Many Requests) status code
+    if (response.status === 429) {
+      console.warn('⚠️ API rate limit (HTTP 429) detected');
+      throw new Error('Rate limit exceeded');
+    }
+    
+    // Parse JSON
+    const data = await response.json();
+    
+    // Also check response body for rate limit message (belt and suspenders)
+    if (data.message && data.message.toLowerCase().includes('rate limit')) {
+      console.warn('⚠️ Rate limit detected in response message');
+      throw new Error('Rate limit exceeded');
+    }
+    
+    return data;
   }
 
   // --- HELPER: Clean strings like "$157.30" -> 157.30 ---
@@ -93,6 +114,20 @@ class FinanceApiService {
       const url = `${this.baseURL}/v1/markets/search?search=${encodeURIComponent(query)}`;
       const response = await fetch(url, { method: 'GET', headers: this.headers });
       
+      // Check for HTTP 429 (rate limit) specifically
+      if (response.status === 429) {
+        console.warn('⚠️ API rate limit (429) - falling back to cache...');
+        // Try cache first
+        try {
+          const cached = await databaseService.getSearchCache(query);
+          if (cached && cached.length > 0) {
+            console.log('✅ Using cached search results');
+            return cached;
+          }
+        } catch (e) {}
+        throw new Error('Rate limit exceeded');
+      }
+      
       if (!response.ok) {
         console.warn(`⚠️ Search API returned ${response.status}, trying fallback...`);
         
@@ -119,7 +154,23 @@ class FinanceApiService {
 
       console.log(`📦 Found ${results.length} results from API`);
 
-      const companies: Company[] = results.slice(0, 50).map((item: any) => ({
+      // Filter out non-stock symbols (currency pairs, futures, etc.)
+      // Currency pairs typically contain =X, futures contain =F
+      const stockResults = results.filter((item: any) => {
+        const symbol = item.symbol || item.ticker || '';
+        // Exclude currency pairs (=X), futures (=F), and other non-stocks
+        if (symbol.includes('=X') || symbol.includes('=F')) return false;
+        // Exclude if quoteType indicates non-stock
+        const quoteType = item.quoteType || item.typeDisp || '';
+        if (quoteType.toLowerCase().includes('currency') || 
+            quoteType.toLowerCase().includes('future') ||
+            quoteType.toLowerCase().includes('index')) return false;
+        return true;
+      });
+
+      console.log(`📊 Filtered to ${stockResults.length} stock results`);
+
+      const companies: Company[] = stockResults.slice(0, 50).map((item: any) => ({
         symbol: item.symbol || item.ticker,
         name: item.name || item.longName || item.shortName || item.symbol,
         exchange: item.exchange || item.exchDisp || 'N/A',
@@ -190,25 +241,35 @@ class FinanceApiService {
     await this.ensureInitialized();
 
     try {
-      // 1. Check Fresh Cache (< 24h)
+      // Log market status for debugging
+      const marketStatus = getMarketStatus();
+      console.log(`📈 Market status: ${marketStatus.toUpperCase()}`);
+
+      // 1. Check Cache (uses market-aware TTL: 5min when open, 24h when closed)
       const cached = await databaseService.getStockQuote(symbol);
       if (cached) {
-        console.log('✅ Using fresh cached quote from SQLite');
+        console.log(`✅ Using cached quote from SQLite (${marketStatus === 'open' ? '5min' : '24h'} TTL)`);
         return cached;
       }
 
       // 2. Fetch API - Get quote and today's history for session stats
       await this.throttleRequest();
-      console.log('📊 Fetching Quote and Today Session Data...');
+      console.log('📊 Fetching fresh quote from API...');
       
       const quoteResponse = await fetch(`${this.baseURL}/v1/markets/quote?symbol=${symbol}&type=STOCKS`, { 
         method: 'GET', 
         headers: this.headers 
       });
       
+      // Check for HTTP 429 (rate limit) before parsing JSON
+      if (quoteResponse.status === 429) {
+        console.warn('⚠️ API rate limit (429) - falling back to cache...');
+        throw new Error('Rate limit exceeded');
+      }
+      
       const data = await quoteResponse.json();
 
-      // Check for rate limit
+      // Also check response body for rate limit message
       if (data.message && data.message.includes('rate limit')) {
         console.warn('⚠️ Rate limit hit - using cache');
         throw new Error('Rate limit exceeded');
@@ -297,19 +358,23 @@ class FinanceApiService {
       }
 
       // Build stock quote with comprehensive fallbacks
+      const now = Date.now();
+      
+      // Parse volume safely - handle various formats and null cases
+      const rawVolume = primaryData.volume || 
+                        secondaryData.volume ||
+                        directFields.regularMarketVolume ||
+                        directFields.volume;
+      const parsedVolume = rawVolume ? parseInt(rawVolume.toString().replace(/,/g, '')) : 0;
+      // If volume is NaN or 0, set to null (will be stored as null in DB)
+      const safeVolume = !isNaN(parsedVolume) && parsedVolume > 0 ? parsedVolume : 0;
+      
       const stockQuote: StockQuote = {
         symbol: result.symbol || result.ticker || symbol,
         price: price,
         change: change,
         changePercent: changePercent,
-        // Volume is in primaryData (with commas: "295,468")
-        volume: parseInt((
-          primaryData.volume || 
-          secondaryData.volume ||
-          directFields.regularMarketVolume ||
-          directFields.volume ||
-          '0'
-        ).toString().replace(/,/g, '')),
+        volume: safeVolume,
         // Session data from history endpoint
         high: todayHigh,
         low: todayLow,
@@ -321,6 +386,7 @@ class FinanceApiService {
           prevClose
         ),
         timestamp: new Date().toISOString(),
+        cachedAt: now, // Fresh from API
       };
 
       console.log('📊 Quote data:', {
@@ -337,17 +403,21 @@ class FinanceApiService {
       return stockQuote;
 
     } catch (error) {
-      console.warn('Network Error (Quote):', error);
+      // Only warn for unexpected errors, not for expected "no data" cases
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      if (errorMsg.includes('No quote data')) {
+        console.log(`ℹ️ No quote available for ${symbol} (may be currency/future/index)`);
+      } else {
+        console.warn('Network Error (Quote):', error);
+      }
       
       // 4. Fallback to OLD cache (ignore expiration)
       const oldCached = await databaseService.getStockQuote(symbol, Infinity);
       if (oldCached) {
-        console.log('⚠️ Using OLD cached data instead of Mock');
         return oldCached;
       }
 
       // 5. Last Resort: Mock Data
-      console.warn('⚠️ No cache found. Using Mock Data.');
       return this.getMockStockQuote(symbol);
     }
   }
@@ -372,9 +442,16 @@ class FinanceApiService {
       const url = `${this.baseURL}/v1/markets/stock/modules?symbol=${symbol}&module=asset-profile`;
       
       const response = await fetch(url, { method: 'GET', headers: this.headers });
+      
+      // Check for HTTP 429 (rate limit) before parsing JSON
+      if (response.status === 429) {
+        console.warn('⚠️ API rate limit (429) - falling back to cache...');
+        throw new Error('Rate limit exceeded');
+      }
+      
       const data = await response.json();
       
-      // Check for rate limit
+      // Also check response body for rate limit message
       if (data.message && data.message.includes('rate limit')) {
         console.warn('⚠️ Rate limit hit - using cache');
         throw new Error('Rate limit exceeded');
@@ -572,6 +649,13 @@ class FinanceApiService {
       
       await this.throttleRequest();
       const response = await fetch(url, { method: 'GET', headers: this.headers });
+      
+      // Check for HTTP 429 (rate limit) before parsing JSON
+      if (response.status === 429) {
+        console.warn('⚠️ API rate limit (429) for history - falling back to cache...');
+        throw new Error('Rate limit exceeded');
+      }
+      
       const data = await response.json();
       console.log('📡 History response keys:', Object.keys(data));
       console.log('📡 History body type:', Array.isArray(data.body) ? 'array' : typeof data.body);
@@ -585,7 +669,7 @@ class FinanceApiService {
         }
       }
       
-      // Check if it's a rate limit error
+      // Also check response body for rate limit message
       if (data.message && data.message.includes('rate limit')) {
         console.warn('⚠️ Rate limit hit for history');
         throw new Error('Rate limit exceeded');
@@ -739,6 +823,7 @@ class FinanceApiService {
       open: parseFloat((price + change * 0.5).toFixed(2)),
       previousClose: parseFloat((price - change).toFixed(2)),
       timestamp: new Date().toISOString(),
+      cachedAt: Date.now(), // Add timestamp for DataFreshnessBadge
     };
   }
 
@@ -768,9 +853,22 @@ class FinanceApiService {
       const url = `${this.baseURL}/v1/markets/stock/modules?symbol=${symbol}&module=${module}`;
       
       const response = await fetch(url, { method: 'GET', headers: this.headers });
+      
+      // Check for HTTP 429 (rate limit) before parsing JSON
+      if (response.status === 429) {
+        console.warn(`⚠️ API rate limit (429) for ${module} - using fallback`);
+        // Fallback to old cache (ignore expiration)
+        const oldCached = await databaseService.getStockModule(symbol, module, Infinity);
+        if (oldCached) {
+          console.log(`⚠️ Using old cached ${module} as fallback`);
+          return oldCached;
+        }
+        throw new Error('Rate limit - no cache available');
+      }
+      
       const data = await response.json();
 
-      // Check for rate limit
+      // Also check response body for rate limit message
       if (data.message && data.message.includes('rate limit')) {
         console.warn(`⚠️ Rate limit hit for ${module} - using fallback`);
         // 3. Fallback to old cache (ignore expiration)
@@ -829,9 +927,21 @@ class FinanceApiService {
       const url = `${this.baseURL}/v1/markets/screener?list=${list}`;
       
       const response = await fetch(url, { method: 'GET', headers: this.headers });
+      
+      // Check for HTTP 429 (rate limit) before parsing JSON
+      if (response.status === 429) {
+        console.warn('⚠️ API rate limit (429) - falling back to cache...');
+        const oldCached = await databaseService.getMarketData(cacheKey, Infinity);
+        if (oldCached) {
+          console.log(`⚠️ Using old cached ${list} as fallback`);
+          return oldCached;
+        }
+        return [];
+      }
+      
       const data = await response.json();
 
-      // Check for rate limit
+      // Also check response body for rate limit message
       if (data.message && data.message.includes('rate limit')) {
         console.warn('⚠️ Rate limit hit');
         // 3. Fallback to old cache
@@ -849,6 +959,23 @@ class FinanceApiService {
       // 4. Save to cache
       if (results.length > 0) {
         await databaseService.saveMarketData(cacheKey, results);
+        
+        // 5. Also save companies to companies table for RAG knowledge base count
+        for (const stock of results) {
+          if (stock.symbol) {
+            try {
+              await databaseService.saveCompany({
+                symbol: stock.symbol,
+                name: stock.shortName || stock.longName || stock.symbol,
+                exchange: stock.exchange || 'N/A',
+                currency: stock.currency || 'USD',
+                country: 'USA',
+              });
+            } catch (e) {
+              // Ignore individual company save errors
+            }
+          }
+        }
       }
       
       console.log(`✅ Fetched and cached ${results.length} results for ${list}`);
@@ -923,6 +1050,23 @@ class FinanceApiService {
       // 4. Save to cache
       if (data.body && data.body.length > 0) {
         await databaseService.saveMarketData(cacheKey, data);
+        
+        // 5. Also save companies to companies table for RAG knowledge base count
+        for (const stock of data.body) {
+          if (stock.symbol) {
+            try {
+              await databaseService.saveCompany({
+                symbol: stock.symbol,
+                name: stock.shortName || stock.longName || stock.name || stock.symbol,
+                exchange: stock.exchange || 'N/A',
+                currency: stock.currency || 'USD',
+                country: 'USA',
+              });
+            } catch (e) {
+              // Ignore individual company save errors
+            }
+          }
+        }
       }
       
       console.log(`✅ Fetched and cached ${data.body?.length || 0} tickers (page ${page})`);

@@ -19,6 +19,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { ScreenShell } from '@/components';
 import { palette, spacing, layout } from '@/theme';
 import { financeApiService } from '@/services/financeApiService';
+import { tradingViewPriceService } from '@/services/tradingViewPriceService';
 import type { RootStackParamList } from '@/navigation/types';
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
@@ -31,9 +32,17 @@ export const BrowseStocksScreen = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalRecords, setTotalRecords] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [, setRefresh] = useState(0);
 
   useEffect(() => {
     loadStocks(1);
+    
+    // Poll for TradingView price updates
+    const interval = setInterval(() => {
+      setRefresh(prev => prev + 1);
+    }, 2000);
+    
+    return () => clearInterval(interval);
   }, []);
 
   const loadStocks = async (page: number) => {
@@ -87,7 +96,12 @@ export const BrowseStocksScreen = () => {
   };
 
   const renderStockCard = ({ item }: { item: any }) => {
-    const isPositive = (item.regularMarketChangePercent || 0) >= 0;
+    // Try TradingView price first, then fall back to API data
+    const tvPrice = tradingViewPriceService.getPrice(item.symbol);
+    const displayPrice = tvPrice?.price || item.regularMarketPrice;
+    const displayChangePercent = tvPrice?.changePercent ?? item.regularMarketChangePercent;
+    
+    const isPositive = (displayChangePercent || 0) >= 0;
     const ChangeIcon = isPositive ? TrendingUp : TrendingDown;
     const changeColor = isPositive ? palette.success : palette.danger;
 
@@ -121,21 +135,21 @@ export const BrowseStocksScreen = () => {
 
         {/* Right: Price & Change */}
         <View style={styles.priceContainer}>
-          {item.regularMarketPrice && (
+          {displayPrice && (
             <Text style={styles.priceText}>
-              ${typeof item.regularMarketPrice === 'number' 
-                ? item.regularMarketPrice.toFixed(2) 
-                : parseFloat(item.regularMarketPrice).toFixed(2)}
+              ${typeof displayPrice === 'number' 
+                ? displayPrice.toFixed(2) 
+                : parseFloat(displayPrice).toFixed(2)}
             </Text>
           )}
-          {item.regularMarketChangePercent !== undefined && (
+          {displayChangePercent !== undefined && (
             <View style={[styles.miniChangeBadge, { backgroundColor: isPositive ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)' }]}>
               <ChangeIcon size={10} color={changeColor} />
               <Text style={[styles.miniChangeText, { color: changeColor }]}>
                 {isPositive ? '+' : ''}
-                {typeof item.regularMarketChangePercent === 'number'
-                  ? item.regularMarketChangePercent.toFixed(2)
-                  : parseFloat(item.regularMarketChangePercent).toFixed(2)}%
+                {typeof displayChangePercent === 'number'
+                  ? displayChangePercent.toFixed(2)
+                  : parseFloat(displayChangePercent).toFixed(2)}%
               </Text>
             </View>
           )}

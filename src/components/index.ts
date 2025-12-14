@@ -1,3 +1,4 @@
+export * from './DataFreshnessBadge';
 export * from './MetricCard';
 export * from './ScreenShell';
 export * from './SectionHeader';

@@ -113,14 +113,40 @@ export const AIChatScreen = () => {
       await databaseService.initialize();
       
       const stats = await ragService.getCacheStats();
-      const available = [];
-      if (stats.companies > 0) available.push(`${stats.companies} companies`);
-      if (stats.news > 0) available.push(`${stats.news} news articles`);
-      if (stats.gainers > 0) available.push('market movers');
-      if (stats.earnings > 0) available.push(`${stats.earnings} earnings events`);
       
-      if (available.length > 0) {
-        welcomeText += `\n\n**Available Data:** ${available.join(', ')}`;
+      // Build detailed knowledge base summary
+      const hasAnyData = stats.companies > 0 || stats.news > 0 || stats.gainers > 0 || stats.earnings > 0;
+      
+      if (hasAnyData) {
+        welcomeText += '\n\n📊 **Knowledge Base:**';
+        
+        // Company data (with data modules breakdown)
+        if (stats.companies > 0) {
+          welcomeText += `\n• **${stats.companies}** companies (quotes, metrics, 14+ data modules each)`;
+        }
+        
+        // Market movers
+        const totalMovers = (stats.gainers || 0) + (stats.losers || 0) + (stats.mostActive || 0) + (stats.undervalued || 0);
+        if (totalMovers > 0) {
+          welcomeText += `\n• **Market Movers:** ${stats.gainers || 0} gainers, ${stats.losers || 0} losers, ${stats.mostActive || 0} active, ${stats.undervalued || 0} undervalued`;
+        }
+        
+        // News
+        if (stats.news > 0) {
+          welcomeText += `\n• **${stats.news}** news articles`;
+        }
+        
+        // Calendar events (expanded)
+        const calendarItems = [];
+        if (stats.earnings > 0) calendarItems.push(`${stats.earnings} earnings`);
+        if (stats.ipos > 0) calendarItems.push(`${stats.ipos} IPOs`);
+        if (stats.splits > 0) calendarItems.push(`${stats.splits} splits`);
+        if (stats.dividends > 0) calendarItems.push(`${stats.dividends} dividends`);
+        if (stats.economicEvents > 0) calendarItems.push(`${stats.economicEvents} economic events`);
+        if (stats.offerings > 0) calendarItems.push(`${stats.offerings} offerings`);
+        if (calendarItems.length > 0) {
+          welcomeText += `\n• **Calendar:** ${calendarItems.join(', ')}`;
+        }
       } else {
         welcomeText += '\n\n💡 *Tip: Browse stocks or check Market Movers to populate my knowledge base!*';
       }

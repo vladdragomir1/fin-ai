@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -15,12 +15,15 @@ import {
   ArrowRight, 
   Building2, 
   Globe, 
-  AlertCircle 
+  AlertCircle,
+  TrendingUp,
+  TrendingDown
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { ScreenShell } from '@/components';
 import { financeApiService } from '@/services/financeApiService';
+import { tradingViewPriceService } from '@/services/tradingViewPriceService';
 import { useWatchlist } from '@/context/WatchlistContext';
 import { palette, spacing, layout } from '@/theme';
 import type { Company } from '@/types';
@@ -28,14 +31,30 @@ import type { RootStackParamList } from '@/navigation/types';
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
+interface CompanyWithPrice extends Company {
+  price?: number;
+  changePercent?: number;
+}
+
 export const CompanySearchScreen = () => {
   // --- LOGIC (Preserved 100%) ---
   const navigation = useNavigation<NavigationProp>();
   const { addToWatchlist, removeFromWatchlist, isInWatchlist } = useWatchlist();
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Company[]>([]);
+  const [results, setResults] = useState<CompanyWithPrice[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [, setRefresh] = useState(0);
+
+  // Poll for TradingView price updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Trigger re-render to show updated prices from TradingView
+      setRefresh(prev => prev + 1);
+    }, 2000);
+    
+    return () => clearInterval(interval);
+  }, []);
 
   const handleSearch = async () => {
     if (!query.trim()) return;
@@ -45,7 +64,24 @@ export const CompanySearchScreen = () => {
 
     try {
       const companies = await financeApiService.searchCompanies(query);
-      setResults(companies);
+      
+      // Fetch quotes for all search results to show prices
+      const companiesWithPrices = await Promise.all(
+        companies.map(async (company) => {
+          try {
+            const quote = await financeApiService.getStockQuote(company.symbol);
+            return {
+              ...company,
+              price: quote?.price,
+              changePercent: quote?.changePercent,
+            };
+          } catch {
+            return company;
+          }
+        })
+      );
+      
+      setResults(companiesWithPrices);
     } catch (error) {
       console.error('Search error:', error);
       setResults([]);
@@ -142,6 +178,32 @@ export const CompanySearchScreen = () => {
                         <Text style={styles.metaText}>{item.currency}</Text>
                       </View>
                     </View>
+
+                    {/* Price & Change */}
+                    {(() => {
+                      // Try TradingView price first, then fall back to API data from search
+                      const tvPrice = tradingViewPriceService.getPrice(item.symbol);
+                      const price = tvPrice?.price || item.price;
+                      const changePercent = tvPrice?.changePercent ?? item.changePercent;
+                      
+                      if (price !== undefined && changePercent !== undefined) {
+                        const isPositive = changePercent >= 0;
+                        const TrendIcon = isPositive ? TrendingUp : TrendingDown;
+                        const changeColor = isPositive ? palette.success : palette.danger;
+                        return (
+                          <View style={styles.priceSection}>
+                            <Text style={styles.priceValue}>${price.toFixed(2)}</Text>
+                            <View style={[styles.changeBadge, { backgroundColor: isPositive ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)' }]}>
+                              <TrendIcon size={10} color={changeColor} />
+                              <Text style={[styles.changeText, { color: changeColor }]}>
+                                {isPositive ? '+' : ''}{changePercent.toFixed(2)}%
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      }
+                      return null;
+                    })()}
 
                     {/* Right: Action */}
                     <TouchableOpacity 
@@ -321,6 +383,30 @@ const styles = StyleSheet.create({
   },
   favoriteButton: {
     padding: spacing.sm,
+  },
+
+  // Price Display
+  priceSection: {
+    alignItems: 'flex-end',
+    marginRight: spacing.sm,
+  },
+  priceValue: {
+    color: palette.text,
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  changeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
+    gap: 3,
+  },
+  changeText: {
+    fontSize: 11,
+    fontWeight: '700',
   },
 
   // Empty State

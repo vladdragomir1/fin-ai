@@ -16,7 +16,7 @@ import {
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { ScreenShell } from '@/components';
+import { ScreenShell, DataFreshnessBadge } from '@/components';
 import { palette, spacing, layout } from '@/theme';
 import { financeApiService } from '@/services/financeApiService';
 import type { RootStackParamList } from '@/navigation/types';
@@ -32,6 +32,7 @@ export const MarketMoversScreen = () => {
   const [losers, setLosers] = useState<any[]>([]);
   const [mostActive, setMostActive] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [lastFetchTime, setLastFetchTime] = useState<number | null>(null);
 
   useEffect(() => {
     loadInitialData();
@@ -59,6 +60,7 @@ export const MarketMoversScreen = () => {
     try {
       const data = await financeApiService.getMarketGainers();
       setGainers(data);
+      setLastFetchTime(Date.now());
     } catch (err) {
       console.error('Error loading gainers:', err);
       setError('Failed to load market gainers');
@@ -69,6 +71,7 @@ export const MarketMoversScreen = () => {
     try {
       const data = await financeApiService.getMarketLosers();
       setLosers(data);
+      setLastFetchTime(Date.now());
     } catch (err) {
       console.error('Error loading losers:', err);
       setError('Failed to load market losers');
@@ -79,6 +82,7 @@ export const MarketMoversScreen = () => {
     try {
       const data = await financeApiService.getMostActive();
       setMostActive(data);
+      setLastFetchTime(Date.now());
     } catch (err) {
       console.error('Error loading most active:', err);
       setError('Failed to load most active stocks');
@@ -157,7 +161,10 @@ export const MarketMoversScreen = () => {
       <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Market Movers</Text>
+          <View style={styles.headerTop}>
+            <Text style={styles.title}>Market Movers</Text>
+            {lastFetchTime && <DataFreshnessBadge cachedAt={lastFetchTime} compact />}
+          </View>
           <Text style={styles.subtitle}>Real-time gainers, losers & most active</Text>
         </View>
 
@@ -244,6 +251,11 @@ const styles = StyleSheet.create({
   header: {
     marginTop: spacing.xl,
     marginBottom: spacing.lg,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   title: {
     color: palette.text,

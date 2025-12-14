@@ -1,5 +1,6 @@
 import { open } from 'react-native-quick-sqlite';
 import type { Company, StockQuote, ChartDataPoint, CompanyOverview, FinancialMetrics } from '@/types';
+import { getQuoteCacheTTL } from '@/utils/marketHours';
 
 interface SearchCacheEntry {
   query: string;
@@ -10,6 +11,7 @@ interface SearchCacheEntry {
 class DatabaseService {
   private db: any = null;
   private readonly DB_NAME = 'finance_ai';
+  private readonly DB_VERSION = 2; // Increment when schema changes
 
   /**
    * Initialize database and create tables
@@ -21,10 +23,71 @@ class DatabaseService {
       this.db = open({ name: this.DB_NAME });
 
       await this.createTables();
+      await this.migrateDatabase(); // Run migrations after table creation
       //console.log('Database initialized successfully');
     } catch (error) {
       //console.error('Error initializing database:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Run database migrations for schema updates
+   */
+  private async migrateDatabase(): Promise<void> {
+    if (!this.db) return;
+
+    try {
+      // Check current schema version
+      await this.db.execute(`CREATE TABLE IF NOT EXISTS db_meta (key TEXT PRIMARY KEY, value TEXT)`);
+      
+      const versionResult = await this.db.execute(`SELECT value FROM db_meta WHERE key = 'schema_version'`);
+      const currentVersion = versionResult?.rows?._array?.[0]?.value ? parseInt(versionResult.rows._array[0].value) : 1;
+
+      if (currentVersion < 2) {
+        console.log('🔄 Migrating database to v2 (nullable volume)...');
+        
+        // SQLite doesn't support ALTER COLUMN, so we need to recreate the table
+        // But first, let's try to just drop the constraint by recreating
+        try {
+          // Create new table with nullable volume
+          await this.db.execute(`
+            CREATE TABLE IF NOT EXISTS stock_quotes_new (
+              symbol TEXT PRIMARY KEY,
+              price REAL NOT NULL,
+              change_value REAL NOT NULL,
+              change_percent REAL NOT NULL,
+              volume INTEGER,
+              high REAL NOT NULL,
+              low REAL NOT NULL,
+              open REAL NOT NULL,
+              previous_close REAL NOT NULL,
+              timestamp TEXT NOT NULL,
+              cached_at INTEGER NOT NULL
+            );
+          `);
+          
+          // Copy data from old table
+          await this.db.execute(`
+            INSERT OR IGNORE INTO stock_quotes_new 
+            SELECT symbol, price, change_value, change_percent, volume, high, low, open, previous_close, timestamp, cached_at 
+            FROM stock_quotes
+          `);
+          
+          // Drop old table and rename new one
+          await this.db.execute(`DROP TABLE IF EXISTS stock_quotes`);
+          await this.db.execute(`ALTER TABLE stock_quotes_new RENAME TO stock_quotes`);
+          
+          console.log('✅ Database migrated to v2');
+        } catch (migrationErr) {
+          console.warn('Migration warning (may be first run):', migrationErr);
+        }
+        
+        // Update version
+        await this.db.execute(`INSERT OR REPLACE INTO db_meta (key, value) VALUES ('schema_version', '2')`);
+      }
+    } catch (err) {
+      console.warn('Database migration check failed (non-critical):', err);
     }
   }
 
@@ -46,14 +109,14 @@ class DatabaseService {
       );
     `);
 
-    // Stock quotes table
+    // Stock quotes table - volume is nullable for stocks that don't report volume (some ETFs, mutual funds)
     await this.db.execute(`
       CREATE TABLE IF NOT EXISTS stock_quotes (
         symbol TEXT PRIMARY KEY,
         price REAL NOT NULL,
         change_value REAL NOT NULL,
         change_percent REAL NOT NULL,
-        volume INTEGER NOT NULL,
+        volume INTEGER,
         high REAL NOT NULL,
         low REAL NOT NULL,
         open REAL NOT NULL,
@@ -170,27 +233,40 @@ class DatabaseService {
   async saveStockQuote(quote: StockQuote): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
 
+    // Validate quote data before saving
+    if (typeof quote.price !== 'number' || isNaN(quote.price) || quote.price <= 0) {
+      console.warn(`[DB] ⚠️ Invalid quote price for ${quote.symbol}: ${quote.price} - skipping save`);
+      return; // Don't save corrupted data
+    }
+
     // Ensure company record exists so symbol appears in getAllCachedSymbols()
     await this.db.execute(
       `INSERT OR IGNORE INTO companies (symbol, name, exchange, currency, country, cached_at) VALUES (?, ?, ?, ?, ?, ?)`,
       [quote.symbol, quote.symbol, 'N/A', 'USD', 'USA', Date.now()]
     );
 
+    // Handle null/undefined volume (some ETFs and mutual funds don't report volume)
+    const safeVolume = (quote.volume && !isNaN(quote.volume)) ? quote.volume : null;
+
     await this.db.execute(
       `INSERT OR REPLACE INTO stock_quotes (symbol, price, change_value, change_percent, volume, high, low, open, previous_close, timestamp, cached_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [quote.symbol, quote.price, quote.change, quote.changePercent, quote.volume, quote.high, quote.low, quote.open, quote.previousClose, quote.timestamp, Date.now()]
+      [quote.symbol, quote.price, quote.change, quote.changePercent, safeVolume, quote.high, quote.low, quote.open, quote.previousClose, quote.timestamp, Date.now()]
     );
   }
 
   /**
    * Get cached stock quote
+   * Uses market-aware TTL: 5min during market hours, 24h when closed
    */
-  async getStockQuote(symbol: string, maxAge: number = 24 * 60 * 60 * 1000): Promise<StockQuote | null> {
+  async getStockQuote(symbol: string, maxAge?: number): Promise<StockQuote | null> {
     if (!this.db) throw new Error('Database not initialized');
+
+    // Use market-aware TTL if not explicitly provided
+    const effectiveMaxAge = maxAge ?? getQuoteCacheTTL();
 
     const result = await this.db.execute(
       `SELECT * FROM stock_quotes WHERE symbol = ? AND cached_at > ?`,
-      [symbol, Date.now() - maxAge]
+      [symbol, Date.now() - effectiveMaxAge]
     );
 
     if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
@@ -201,12 +277,13 @@ class DatabaseService {
       price: row.price,
       change: row.change_value,
       changePercent: row.change_percent,
-      volume: row.volume,
+      volume: row.volume || 0, // Handle null volume
       high: row.high,
       low: row.low,
       open: row.open,
       previousClose: row.previous_close,
       timestamp: row.timestamp,
+      cachedAt: row.cached_at, // Include cache timestamp for freshness indicator
     };
   }
 
@@ -381,7 +458,15 @@ class DatabaseService {
     if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
 
     const row = result.rows._array[0];
-    const symbols: string[] = JSON.parse(row.results);
+    
+    // Parse cached symbols with error handling
+    let symbols: string[] = [];
+    try {
+      symbols = JSON.parse(row.results);
+    } catch (parseError) {
+      console.error('❌ Corrupted search cache data for query:', query, parseError);
+      return null; // Return null to force fresh search
+    }
 
     const companies: Company[] = [];
     for (const symbol of symbols) {
@@ -404,10 +489,12 @@ class DatabaseService {
 
   /**
    * Get all data for a symbol (for RAG context)
+   * ENHANCED: Now includes ALL available cached data from 20+ API endpoints
    */
   async getCompanyDataForRAG(symbol: string): Promise<any> {
     if (!this.db) throw new Error('Database not initialized');
 
+    // Core financial data (always fetch)
     const [quote, overview, metrics, historical] = await Promise.all([
       this.getStockQuote(symbol, Infinity),
       this.getCompanyOverview(symbol, Infinity),
@@ -415,12 +502,101 @@ class DatabaseService {
       this.getHistoricalData(symbol, '1Y', Infinity),
     ]);
 
+    // Extended data from stock modules (if cached)
+    const [earnings, recommendations, insiders, institutions, financialData, statistics] = await Promise.all([
+      this.getStockModule(symbol, 'earnings-history', Infinity),
+      this.getStockModule(symbol, 'recommendation-trend', Infinity),
+      this.getStockModule(symbol, 'insider-holders', Infinity),
+      this.getStockModule(symbol, 'institution-ownership', Infinity),
+      this.getStockModule(symbol, 'financial-data', Infinity),
+      this.getStockModule(symbol, 'statistics', Infinity),
+    ]);
+
+    // Financial statements (if cached)
+    const [incomeStatement, balanceSheet, cashflowStatement] = await Promise.all([
+      this.getStockModule(symbol, 'income-statement', Infinity),
+      this.getStockModule(symbol, 'balance-sheet', Infinity),
+      this.getStockModule(symbol, 'cashflow-statement', Infinity),
+    ]);
+
+    // Additional stock modules (if cached)
+    const [secFilings, upgradeDowngrade, calendarEvents, netSharePurchase, indexTrend] = await Promise.all([
+      this.getStockModule(symbol, 'sec-filings', Infinity),
+      this.getStockModule(symbol, 'upgrade-downgrade-history', Infinity),
+      this.getStockModule(symbol, 'calendar-events', Infinity),
+      this.getStockModule(symbol, 'net-share-purchase-activity', Infinity),
+      this.getStockModule(symbol, 'index-trend', Infinity),
+    ]);
+
+    // Technical indicators (if cached)
+    const [sma, rsi, macd, adx] = await Promise.all([
+      this.getMarketData(`indicator_sma_${symbol}_5m_50`, Infinity),
+      this.getMarketData(`indicator_rsi_${symbol}_5m_14`, Infinity),
+      this.getMarketData(`indicator_macd_${symbol}_5m_12_26_9`, Infinity),
+      this.getMarketData(`indicator_adx_${symbol}_5m_14`, Infinity),
+    ]);
+
     return {
       symbol,
+      // Core data
       quote,
       overview,
       metrics,
       historical: historical?.slice(-30),
+      // Extended modules
+      earnings,
+      recommendations,
+      insiders,
+      institutions,
+      financialData,
+      statistics,
+      // Financial statements
+      incomeStatement,
+      balanceSheet,
+      cashflowStatement,
+      // Additional modules
+      secFilings,
+      upgradeDowngrade,
+      calendarEvents,
+      netSharePurchase,
+      indexTrend,
+      // Technical indicators
+      technicalIndicators: {
+        sma,
+        rsi,
+        macd,
+        adx,
+      },
+    };
+  }
+
+  /**
+   * Get market-wide calendar data for RAG context
+   * Includes: dividends, IPOs, public offerings, stock splits, economic events
+   */
+  async getMarketCalendarsForRAG(): Promise<any> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    // Get all calendar data (use Infinity to get any cached data regardless of age)
+    const today = new Date().toISOString().split('T')[0];
+    const currentMonth = new Date().toISOString().slice(0, 7);
+
+    const [dividends, ipos, offerings, splits, economicEvents, earnings] = await Promise.all([
+      this.getMarketData(`calendar_dividends_${today}`, Infinity),
+      this.getMarketData(`calendar_ipo_${currentMonth}`, Infinity),
+      this.getMarketData(`calendar_offerings_${currentMonth}`, Infinity),
+      this.getMarketData('calendar_splits', Infinity),
+      this.getMarketData('calendar_economic_events', Infinity),
+      this.getMarketData('calendar_earnings', Infinity),
+    ]);
+
+    return {
+      dividends,
+      ipos,
+      offerings,
+      splits,
+      economicEvents,
+      earnings,
     };
   }
 

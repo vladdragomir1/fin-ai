@@ -17,6 +17,8 @@ export interface StockQuote {
   open: number;
   previousClose: number;
   timestamp: string;
+  /** Timestamp when data was cached (for freshness indicator) */
+  cachedAt?: number;
 }
 
 export interface CompanyOverview {

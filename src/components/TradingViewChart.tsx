@@ -1,16 +1,35 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { StyleSheet, View, Text } from 'react-native';
 import { useNetInfo } from '@react-native-community/netinfo';
 import { WebView } from 'react-native-webview';
 import { palette, layout } from '@/theme';
+import { tradingViewPriceService } from '@/services/tradingViewPriceService';
 
 interface Props {
   symbol: string;
   height?: number;
+  onPriceUpdate?: (price: number, change: number, changePercent: number) => void;
 }
 
-export const TradingViewChart = ({ symbol, height = 400 }: Props) => {
+export const TradingViewChart = ({ symbol, height = 400, onPriceUpdate }: Props) => {
   const netInfo = useNetInfo();
+  const webViewRef = useRef<WebView>(null);
+
+  // Handle messages from WebView containing price data
+  const handleWebViewMessage = (event: any) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'priceUpdate') {
+        const { price, change, changePercent } = data;
+        tradingViewPriceService.setPrice(symbol, price, change, changePercent);
+        if (onPriceUpdate) {
+          onPriceUpdate(price, change, changePercent);
+        }
+      }
+    } catch (error) {
+      // Silently ignore parse errors
+    }
+  };
 
   // Smart Exchange Detection Logic
   // Instead of listing 5000 stocks, we use US Market conventions.
@@ -56,7 +75,7 @@ export const TradingViewChart = ({ symbol, height = 400 }: Props) => {
           <div id="tradingview-widget"></div>
           <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
           <script type="text/javascript">
-            new TradingView.widget({
+            const widget = new TradingView.widget({
               "autosize": true,
               "symbol": "${fullSymbol}",
               "interval": "D",
@@ -78,6 +97,84 @@ export const TradingViewChart = ({ symbol, height = 400 }: Props) => {
               "calendar": false,
               "studies": ["MASimple@tv-basicstudies"]
             });
+
+            // Extract price data from TradingView widget
+            widget.onChartReady(() => {
+              setTimeout(extractPriceData, 1500);
+              setInterval(extractPriceData, 3000);
+            });
+
+            function extractPriceData() {
+              try {
+                const bodyText = document.body.innerText || document.body.textContent || '';
+                
+                let price = null;
+                let change = null;
+                let changePercent = null;
+
+                // TradingView format: "649.01 −1.06 (−0.16%)" or "649.01  -1.06 (-0.16%)"
+                // Note: TradingView uses special minus sign (−) U+2212, not regular hyphen (-)
+                
+                // Pattern 1: Full match with price, change, and percent
+                // Handle both regular minus (-) and unicode minus (−)
+                const fullPattern = /(\\d{1,4}\\.\\d{2})\\s*[−-]?(\\d+\\.\\d{2})\\s*\\([−-]?(\\d+\\.\\d{2})%\\)/;
+                const fullMatch = bodyText.match(fullPattern);
+                
+                if (fullMatch) {
+                  price = parseFloat(fullMatch[1]);
+                  change = -parseFloat(fullMatch[2]); // Assume negative if pattern matched
+                  changePercent = -parseFloat(fullMatch[3]);
+                }
+                
+                // Pattern 2: Try to find price and percentage separately
+                if (!price) {
+                  // Look for stock prices (reasonable range)
+                  const priceMatches = bodyText.match(/\\b(\\d{1,4}\\.\\d{2})\\b/g);
+                  if (priceMatches) {
+                    for (const match of priceMatches) {
+                      const testPrice = parseFloat(match);
+                      // Stock prices typically between $1 and $5000
+                      if (testPrice > 1 && testPrice < 5000) {
+                        price = testPrice;
+                        break;
+                      }
+                    }
+                  }
+                }
+                
+                // Find percentage change
+                if (changePercent === null) {
+                  // Match both regular minus and unicode minus
+                  const percentPattern = /[−-]?(\\d+\\.\\d{2})%/;
+                  const percentMatch = bodyText.match(percentPattern);
+                  if (percentMatch) {
+                    changePercent = parseFloat(percentMatch[1]);
+                    // Check if there's a minus sign before it
+                    if (bodyText.includes('-' + percentMatch[1]) || bodyText.includes('−' + percentMatch[1])) {
+                      changePercent = -changePercent;
+                    }
+                  }
+                }
+
+                // Calculate change from percentage if not found
+                if (price && changePercent !== null && change === null) {
+                  change = price * (changePercent / 100);
+                }
+
+                // Send data if we have at least price
+                if (price !== null) {
+                  const payload = {
+                    type: 'priceUpdate',
+                    price: price,
+                    change: change || 0,
+                    changePercent: changePercent || 0
+                  };
+                  window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+                }
+              } catch (error) {
+                // Silent fail - price extraction is optional
+              }
+            }
           </script>
         </body>
       </html>
@@ -96,6 +193,7 @@ export const TradingViewChart = ({ symbol, height = 400 }: Props) => {
   return (
     <View style={[styles.container, { height }]}> 
       <WebView
+        ref={webViewRef}
         originWhitelist={['*']}
         source={{ html: htmlContent }}
         style={styles.webview}
@@ -104,6 +202,7 @@ export const TradingViewChart = ({ symbol, height = 400 }: Props) => {
         javaScriptEnabled={true}
         domStorageEnabled={true}
         androidLayerType="hardware"
+        onMessage={handleWebViewMessage}
       />
     </View>
   );

@@ -10,6 +10,7 @@ const MODEL_PATH = `${RNFS.ExternalDirectoryPath}/${MODEL_FILENAME}`;
 export const AiService = {
   context: null as LlamaContext | null,
   isInitialized: false,
+  isProcessing: false, // Lock to prevent concurrent requests (Context busy error)
 
   /**
    * Initialize the LFM2-1.2B-RAG Engine
@@ -53,6 +54,14 @@ export const AiService = {
     try {
       console.log(`[AI] Received query: "${userPrompt}"`);
       
+      // Check if already processing (prevents "Context is busy" error)
+      if (this.isProcessing) {
+        console.log('[AI] Context busy - waiting for previous request to complete...');
+        return "Please wait, I'm still processing the previous request...";
+      }
+      
+      this.isProcessing = true; // Lock
+      
       // 1. Ensure DB and AI are ready
       await databaseService.initialize();
       
@@ -92,9 +101,11 @@ export const AiService = {
       console.log(`[AI] Response generated in ${duration}ms`);
       console.log(`[AI] Response preview: ${result.text.substring(0, 100)}...`);
 
+      this.isProcessing = false; // Unlock
       return result.text.trim();
 
     } catch (error) {
+      this.isProcessing = false; // Unlock on error
       console.error('[AI] Error generating response:', error);
       return `I encountered an error accessing the financial database or the AI model.\n\nError: ${error}`;
     }
@@ -110,6 +121,14 @@ export const AiService = {
         // Fallback to truncated user message if AI not ready
         return userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : '');
       }
+
+      // Check if context is busy (prevents "Context is busy" error)
+      if (this.isProcessing) {
+        console.log('[AI] Context busy - skipping title generation');
+        return userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : '');
+      }
+
+      this.isProcessing = true; // Lock
 
       // Create a prompt for title generation
       const titlePrompt = `<|startoftext|><|im_start|>system
@@ -147,9 +166,11 @@ Generate a 3-5 word title for this chat:
       }
 
       console.log(`[AI] Generated title: "${title}"`);
+      this.isProcessing = false; // Unlock
       return title;
 
     } catch (error) {
+      this.isProcessing = false; // Unlock on error
       console.error('[AI] Error generating title:', error);
       return userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : '');
     }
