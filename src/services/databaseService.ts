@@ -1,6 +1,15 @@
 import { open } from 'react-native-quick-sqlite';
 import type { Company, StockQuote, ChartDataPoint, CompanyOverview, FinancialMetrics } from '@/types';
-import { getQuoteCacheTTL } from '@/utils/marketHours';
+import { 
+  getQuoteCacheTTL, 
+  getModuleCacheTTL, 
+  getOverviewCacheTTL, 
+  getMetricsCacheTTL,
+  getMarketDataCacheTTL,
+  getNewsCacheTTL,
+  getCalendarCacheTTL,
+  getIndicatorCacheTTL 
+} from '@/utils/marketHours';
 
 interface SearchCacheEntry {
   query: string;
@@ -357,13 +366,17 @@ class DatabaseService {
 
   /**
    * Get cached company overview
+   * Uses 7-day TTL - company info rarely changes
    */
-  async getCompanyOverview(symbol: string, maxAge: number = 7 * 24 * 60 * 60 * 1000): Promise<CompanyOverview | null> {
+  async getCompanyOverview(symbol: string, maxAge?: number): Promise<CompanyOverview | null> {
     if (!this.db) throw new Error('Database not initialized');
+
+    // Use 7-day TTL if not explicitly provided
+    const effectiveMaxAge = maxAge ?? getOverviewCacheTTL();
 
     const result = await this.db.execute(
       `SELECT * FROM company_overview WHERE symbol = ? AND cached_at > ?`,
-      [symbol, Date.now() - maxAge]
+      [symbol, Date.now() - effectiveMaxAge]
     );
 
     if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
@@ -403,13 +416,17 @@ class DatabaseService {
 
   /**
    * Get cached financial metrics
+   * Uses market-aware TTL: 4 hours during trading, 24 hours when closed
    */
-  async getFinancialMetrics(symbol: string, maxAge: number = 7 * 24 * 60 * 60 * 1000): Promise<FinancialMetrics | null> {
+  async getFinancialMetrics(symbol: string, maxAge?: number): Promise<FinancialMetrics | null> {
     if (!this.db) throw new Error('Database not initialized');
+
+    // Use market-aware TTL if not explicitly provided
+    const effectiveMaxAge = maxAge ?? getMetricsCacheTTL();
 
     const result = await this.db.execute(
       `SELECT * FROM financial_metrics WHERE symbol = ? AND cached_at > ?`,
-      [symbol, Date.now() - maxAge]
+      [symbol, Date.now() - effectiveMaxAge]
     );
 
     if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
@@ -627,13 +644,17 @@ class DatabaseService {
 
   /**
    * Get cached stock module data
+   * Uses market-aware TTL: 1 hour during market hours, 24 hours when closed
    */
-  async getStockModule(symbol: string, module: string, maxAge: number = 24 * 60 * 60 * 1000): Promise<any | null> {
+  async getStockModule(symbol: string, module: string, maxAge?: number): Promise<any | null> {
     if (!this.db) throw new Error('Database not initialized');
+
+    // Use market-aware TTL if not explicitly provided
+    const effectiveMaxAge = maxAge ?? getModuleCacheTTL();
 
     const result = await this.db.execute(
       `SELECT * FROM stock_modules WHERE symbol = ? AND module = ? AND cached_at > ?`,
-      [symbol, module, Date.now() - maxAge]
+      [symbol, module, Date.now() - effectiveMaxAge]
     );
 
     if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;
@@ -660,14 +681,32 @@ class DatabaseService {
   }
 
   /**
-   * Get cached market data
+   * Get cached market data with smart TTL based on data type
+   * - News: 15min open, 1hr closed
+   * - Screeners/Movers: 15min open, 6hr closed
+   * - Calendars: 4 hours always
+   * - Indicators: 5min open, 4hr closed
    */
-  async getMarketData(cacheKey: string, maxAge: number = 15 * 60 * 1000): Promise<any | null> {
+  async getMarketData(cacheKey: string, maxAge?: number): Promise<any | null> {
     if (!this.db) throw new Error('Database not initialized');
+
+    // Smart TTL based on cache key type
+    let effectiveMaxAge = maxAge;
+    if (effectiveMaxAge === undefined) {
+      if (cacheKey.startsWith('news_')) {
+        effectiveMaxAge = getNewsCacheTTL();
+      } else if (cacheKey.startsWith('calendar_')) {
+        effectiveMaxAge = getCalendarCacheTTL();
+      } else if (cacheKey.startsWith('indicator_')) {
+        effectiveMaxAge = getIndicatorCacheTTL();
+      } else {
+        effectiveMaxAge = getMarketDataCacheTTL(); // Default for screeners
+      }
+    }
 
     const result = await this.db.execute(
       `SELECT * FROM market_data_cache WHERE cache_key = ? AND cached_at > ?`,
-      [cacheKey, Date.now() - maxAge]
+      [cacheKey, Date.now() - effectiveMaxAge]
     );
 
     if (!result || !result.rows || !result.rows._array || result.rows._array.length === 0) return null;

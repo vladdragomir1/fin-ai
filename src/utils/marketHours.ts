@@ -209,6 +209,111 @@ export const getQuoteCacheTTL = (): number => {
 };
 
 /**
+ * Get cache TTL for market data (screeners, movers)
+ * - Market Open: 15 minutes
+ * - Extended Hours: 30 minutes
+ * - Market Closed: 6 hours (refreshes at pre-market or API calls)
+ */
+export const getMarketDataCacheTTL = (): number => {
+  try {
+    if (isMarketOpen()) {
+      return 15 * 60 * 1000; // 15 minutes
+    }
+    if (isExtendedHours()) {
+      return 30 * 60 * 1000; // 30 minutes
+    }
+  } catch (e) {
+    console.warn('Error getting market data cache TTL:', e);
+  }
+  return 6 * 60 * 60 * 1000; // 6 hours when closed
+};
+
+/**
+ * Get cache TTL for news
+ * - Market Open: 15 minutes (news impacts prices)
+ * - Extended/Closed: 1 hour
+ */
+export const getNewsCacheTTL = (): number => {
+  try {
+    if (isMarketOpen()) {
+      return 15 * 60 * 1000; // 15 minutes
+    }
+  } catch (e) {
+    console.warn('Error getting news cache TTL:', e);
+  }
+  return 60 * 60 * 1000; // 1 hour
+};
+
+/**
+ * Get cache TTL for stock modules (financials, insider data, etc.)
+ * These don't change as frequently as quotes
+ * - Market Open: 1 hour
+ * - Market Closed: 24 hours
+ */
+export const getModuleCacheTTL = (): number => {
+  try {
+    if (isMarketOpen()) {
+      return 60 * 60 * 1000; // 1 hour during trading
+    }
+  } catch (e) {
+    console.warn('Error getting module cache TTL:', e);
+  }
+  return 24 * 60 * 60 * 1000; // 24 hours when closed
+};
+
+/**
+ * Get cache TTL for company overview (very static data)
+ * - Always: 7 days (company info rarely changes)
+ */
+export const getOverviewCacheTTL = (): number => {
+  return 7 * 24 * 60 * 60 * 1000; // 7 days
+};
+
+/**
+ * Get cache TTL for financial metrics (P/E, EPS, etc.)
+ * - Market Open: 4 hours (updates after earnings)
+ * - Market Closed: 24 hours
+ */
+export const getMetricsCacheTTL = (): number => {
+  try {
+    if (isMarketOpen()) {
+      return 4 * 60 * 60 * 1000; // 4 hours
+    }
+  } catch (e) {
+    console.warn('Error getting metrics cache TTL:', e);
+  }
+  return 24 * 60 * 60 * 1000; // 24 hours
+};
+
+/**
+ * Get cache TTL for calendar data (earnings, dividends, IPOs)
+ * - Always: 4 hours (calendars update infrequently)
+ */
+export const getCalendarCacheTTL = (): number => {
+  return 4 * 60 * 60 * 1000; // 4 hours
+};
+
+/**
+ * Get cache TTL for technical indicators (SMA, RSI, MACD)
+ * - Market Open: 5 minutes
+ * - Extended Hours: 15 minutes  
+ * - Market Closed: 4 hours
+ */
+export const getIndicatorCacheTTL = (): number => {
+  try {
+    if (isMarketOpen()) {
+      return 5 * 60 * 1000; // 5 minutes
+    }
+    if (isExtendedHours()) {
+      return 15 * 60 * 1000; // 15 minutes
+    }
+  } catch (e) {
+    console.warn('Error getting indicator cache TTL:', e);
+  }
+  return 4 * 60 * 60 * 1000; // 4 hours when closed
+};
+
+/**
  * Get market status string for UI display
  */
 export const getMarketStatus = (): 'open' | 'pre-market' | 'after-hours' | 'closed' => {

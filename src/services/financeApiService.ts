@@ -8,7 +8,15 @@ import {
 import { databaseService } from './databaseService';
 import { offlineDataService } from './offlineDataService';
 import { FINANCIAL_API_KEY, FINANCIAL_API_HOST } from '@env';
-import { isMarketOpen, getMarketStatus } from '@/utils/marketHours';
+import { 
+  isMarketOpen, 
+  getMarketStatus,
+  getMarketDataCacheTTL,
+  getNewsCacheTTL,
+  getCalendarCacheTTL,
+  getIndicatorCacheTTL,
+  getModuleCacheTTL
+} from '@/utils/marketHours';
 
 class FinanceApiService {
   private initialized = false;
@@ -834,13 +842,13 @@ class FinanceApiService {
   //                    balance-sheet, cashflow-statement, institution-ownership,
   //                    insider-holders, recommendation-trend, upgrade-downgrade-history,
   //                    sec-filings, index-trend, net-share-purchase-activity
-  // Cache: 24 hours (refresh daily for accurate financial data)
+  // Cache: Market-aware (1hr open, 24hr closed) - via databaseService.getStockModule
   // =========================================================================
   async getStockModule(symbol: string, module: string): Promise<any> {
     await this.ensureInitialized();
 
     try {
-      // 1. Check SQLite cache (24 hour expiration for fresh data)
+      // 1. Check SQLite cache (market-aware TTL via databaseService)
       const cached = await databaseService.getStockModule(symbol, module);
       if (cached) {
         console.log(`✅ Using cached ${module} from SQLite`);
@@ -908,15 +916,15 @@ class FinanceApiService {
   // 8. GET MARKET SCREENER (Day Gainers, Losers, Most Active, etc.)
   // Endpoint: /v1/markets/screener (Mboum Finance API)
   // Available lists: day_gainers, day_losers, most_actives, undervalued_large_caps
-  // Cache: 15 minutes (market data updates frequently during trading hours)
+  // Cache: Market-aware (15min open, 6hr closed)
   // =========================================================================
   async getMarketScreener(list: string = 'day_gainers'): Promise<any[]> {
     await this.ensureInitialized();
 
     try {
-      // 1. Check cache (15 minute expiration for market data)
+      // 1. Check cache (market-aware TTL)
       const cacheKey = `screener_${list}`;
-      const cached = await databaseService.getMarketData(cacheKey, 15 * 60 * 1000);
+      const cached = await databaseService.getMarketData(cacheKey); // Uses smart TTL
       if (cached) {
         console.log(`✅ Using cached ${list} from SQLite`);
         return cached;
@@ -1012,7 +1020,7 @@ class FinanceApiService {
   // 9. GET MARKET TICKERS (Paginated list of stocks)
   // Endpoint: /v2/markets/tickers (Mboum Finance API)
   // Returns paginated list of stocks sorted by market cap
-  // Cache: 1 hour for ticker list data
+  // Cache: Market-aware (default: 15min open, 6hr closed)
   // =========================================================================
   async getMarketTickers(page: number = 1, type: string = 'STOCKS'): Promise<any> {
     await this.ensureInitialized();
@@ -1021,7 +1029,7 @@ class FinanceApiService {
       const cacheKey = `tickers_${type}_page_${page}`;
       
       // 1. Check SQLite cache (1 hour expiration)
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      const cached = await databaseService.getMarketData(cacheKey); // Uses smart market-aware TTL
       if (cached) {
         console.log(`✅ Using cached tickers (page ${page}) from SQLite`);
         return cached;
@@ -1113,7 +1121,7 @@ class FinanceApiService {
   // 10. GET MARKET NEWS (v2 with type filter)
   // Endpoint: /v2/markets/news (Mboum Finance API)
   // Returns comprehensive news articles with images, videos, and filtering
-  // Cache: 15 minutes for fresh news updates
+  // Cache: Market-aware (news_ prefix: 15min open, 1hr closed)
   // =========================================================================
   async getMarketNews(ticker?: string, type: string = 'ALL'): Promise<any[]> {
     await this.ensureInitialized();
@@ -1121,8 +1129,8 @@ class FinanceApiService {
     try {
       const cacheKey = ticker ? `news_v2_${ticker}_${type}` : `news_v2_ALL_${type}`;
       
-      // 1. Check SQLite cache (15 minute expiration for fresh news)
-      const cached = await databaseService.getMarketData(cacheKey);
+      // 1. Check SQLite cache (market-aware: news_ = 15min open, 1hr closed)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log('✅ Using cached news from SQLite');
         return cached;
@@ -1177,7 +1185,7 @@ class FinanceApiService {
   // 11. GET EARNINGS CALENDAR
   // Endpoint: /v1/markets/calendar/earnings (Mboum Finance API)
   // Returns upcoming earnings announcements
-  // Cache: 1 hour for calendar data
+  // Cache: Market-aware (calendar_ prefix: 4 hours always)
   // =========================================================================
   async getEarningsCalendar(): Promise<any[]> {
     await this.ensureInitialized();
@@ -1185,8 +1193,8 @@ class FinanceApiService {
     try {
       const cacheKey = 'calendar_earnings';
       
-      // 1. Check SQLite cache (1 hour expiration)
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      // 1. Check SQLite cache (market-aware: calendar_ = 4 hours)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log('✅ Using cached earnings calendar from SQLite');
         return cached;
@@ -1248,8 +1256,8 @@ class FinanceApiService {
       const targetDate = date || new Date().toISOString().split('T')[0];
       const cacheKey = `calendar_dividends_${targetDate}`;
       
-      // 1. Check SQLite cache (1 hour expiration)
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      // 1. Check SQLite cache (market-aware: calendar_ = 4 hours)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log('✅ Using cached dividends calendar from SQLite');
         return cached;
@@ -1302,7 +1310,7 @@ class FinanceApiService {
   // 13. GET ECONOMIC EVENTS CALENDAR
   // Endpoint: /v1/markets/calendar/economic_events (Mboum Finance API)
   // Returns economic indicators and events for a specific date
-  // Cache: 1 hour for calendar data
+  // Cache: Market-aware (calendar_ prefix: 4 hours always)
   // =========================================================================
   async getEconomicEventsCalendar(date?: string): Promise<any[]> {
     await this.ensureInitialized();
@@ -1312,8 +1320,8 @@ class FinanceApiService {
       const targetDate = date || new Date().toISOString().split('T')[0];
       const cacheKey = `calendar_economic_${targetDate}`;
       
-      // 1. Check SQLite cache (1 hour expiration)
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      // 1. Check SQLite cache (market-aware: calendar_ = 4 hours)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log('✅ Using cached economic events from SQLite');
         return cached;
@@ -1366,7 +1374,7 @@ class FinanceApiService {
   // 14. GET IPO CALENDAR
   // Endpoint: /v1/markets/calendar/ipo (Mboum Finance API)
   // Returns upcoming and recent IPOs for a specific month
-  // Cache: 1 hour for calendar data
+  // Cache: Market-aware (calendar_ prefix: 4 hours always)
   // =========================================================================
   async getIPOCalendar(date?: string): Promise<any> {
     await this.ensureInitialized();
@@ -1376,8 +1384,8 @@ class FinanceApiService {
       const targetDate = date || new Date().toISOString().slice(0, 7);
       const cacheKey = `calendar_ipo_${targetDate}`;
       
-      // 1. Check SQLite cache (1 hour expiration)
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      // 1. Check SQLite cache (market-aware: calendar_ = 4 hours)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log('✅ Using cached IPO calendar from SQLite');
         return cached;
@@ -1429,7 +1437,7 @@ class FinanceApiService {
   // 15. GET PUBLIC OFFERINGS CALENDAR
   // Endpoint: /v1/markets/calendar/public_offerings (Mboum Finance API)
   // Returns secondary offerings, follow-ons, and other public offerings
-  // Cache: 1 hour for calendar data
+  // Cache: Market-aware (calendar_ prefix: 4 hours always)
   // =========================================================================
   async getPublicOfferingsCalendar(date?: string): Promise<any> {
     await this.ensureInitialized();
@@ -1439,8 +1447,8 @@ class FinanceApiService {
       const targetDate = date || new Date().toISOString().slice(0, 7);
       const cacheKey = `calendar_offerings_${targetDate}`;
       
-      // 1. Check SQLite cache (1 hour expiration)
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      // 1. Check SQLite cache (market-aware: calendar_ = 4 hours)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log('✅ Using cached public offerings from SQLite');
         return cached;
@@ -1493,7 +1501,7 @@ class FinanceApiService {
   // 16. GET STOCK SPLITS CALENDAR
   // Endpoint: /v1/markets/calendar/stock-splits (Mboum Finance API)
   // Returns recent and upcoming stock splits
-  // Cache: 1 hour for calendar data
+  // Cache: Market-aware (calendar_ prefix: 4 hours always)
   // =========================================================================
   async getStockSplitsCalendar(): Promise<any[]> {
     await this.ensureInitialized();
@@ -1501,8 +1509,8 @@ class FinanceApiService {
     try {
       const cacheKey = 'calendar_splits';
       
-      // 1. Check SQLite cache (1 hour expiration)
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      // 1. Check SQLite cache (market-aware: calendar_ = 4 hours)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log('✅ Using cached stock splits from SQLite');
         return cached;
@@ -1570,8 +1578,8 @@ class FinanceApiService {
     try {
       const cacheKey = `indicator_sma_${symbol}_${interval}_${timePeriod}`;
       
-      // 1. Check cache (1 hour expiration)
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      // 1. Check cache (market-aware: indicator_ = 5min open, 4hr closed)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log(`✅ Using cached SMA for ${symbol}`);
         return cached;
@@ -1631,8 +1639,8 @@ class FinanceApiService {
     try {
       const cacheKey = `indicator_rsi_${symbol}_${interval}_${timePeriod}`;
       
-      // 1. Check cache
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      // 1. Check cache (market-aware: indicator_ = 5min open, 4hr closed)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log(`✅ Using cached RSI for ${symbol}`);
         return cached;
@@ -1694,8 +1702,8 @@ class FinanceApiService {
     try {
       const cacheKey = `indicator_macd_${symbol}_${interval}_${fastPeriod}_${slowPeriod}_${signalPeriod}`;
       
-      // 1. Check cache
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      // 1. Check cache (market-aware: indicator_ = 5min open, 4hr closed)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log(`✅ Using cached MACD for ${symbol}`);
         return cached;
@@ -1753,8 +1761,8 @@ class FinanceApiService {
     try {
       const cacheKey = `indicator_adx_${symbol}_${interval}_${timePeriod}`;
       
-      // 1. Check cache
-      const cached = await databaseService.getMarketData(cacheKey, 60 * 60 * 1000);
+      // 1. Check cache (market-aware: indicator_ = 5min open, 4hr closed)
+      const cached = await databaseService.getMarketData(cacheKey); // Smart TTL
       if (cached) {
         console.log(`✅ Using cached ADX for ${symbol}`);
         return cached;

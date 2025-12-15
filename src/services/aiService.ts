@@ -83,14 +83,15 @@ export const AiService = {
       let historyContext = '';
       if (chatHistory && chatHistory.length > 0) {
         // Take only recent messages and limit by approximate tokens
+        // Exclude the most recent user message (it's the current query)
         const recentHistory = chatHistory.slice(-MAX_HISTORY_MESSAGES);
         let historyText = '';
         
         for (const msg of recentHistory) {
-          const role = msg.sender === 'user' ? 'User' : 'Assistant';
+          const role = msg.sender === 'user' ? 'User asked' : 'You answered';
           // Skip very long messages to preserve token budget
-          const text = msg.text.length > 500 ? msg.text.substring(0, 500) + '...' : msg.text;
-          historyText += `${role}: ${text}\n`;
+          const text = msg.text.length > 400 ? msg.text.substring(0, 400) + '...' : msg.text;
+          historyText += `${role}: ${text}\n\n`;
           
           // Approximate token count (1 token ≈ 4 chars)
           if (historyText.length > MAX_HISTORY_TOKENS * 4) {
@@ -100,7 +101,8 @@ export const AiService = {
         }
         
         if (historyText) {
-          historyContext = `\n### Previous Conversation:\n${historyText}\n`;
+          historyContext = `### Previous Conversation (for context):\n${historyText}`;
+          console.log('[AI] Including chat history:', recentHistory.length, 'messages');
         }
       }
       
@@ -114,8 +116,9 @@ export const AiService = {
       const result = await this.context.completion({
         prompt: fullPrompt,
         
-        // Output Length: Increased to 1500 for complete financial analysis
-        n_predict: 1500, 
+        // Output Length: Reduced to 512 for concise responses (was 1500)
+        // Most good answers fit in 200-400 tokens
+        n_predict: 512, 
         
         // Temperature: 0 for greedy decoding (LFM2 recommendation)
         temperature: 0, 

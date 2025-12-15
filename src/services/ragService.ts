@@ -703,6 +703,41 @@ class RAGService {
   }
 
   /**
+   * Build a list of all cached companies with names for "browse stocks" queries
+   */
+  async buildCachedCompaniesContext(): Promise<string> {
+    console.log(`[RAG] Building cached companies list context...`);
+    
+    const symbols = await databaseService.getAllCachedSymbols();
+    
+    if (symbols.length === 0) {
+      return 'No companies have been browsed yet. The Browse Stocks screen loads companies from the market.';
+    }
+
+    let context = `### Companies in Knowledge Base (Browse Stocks Data)\n`;
+    context += `**Total Companies Cached:** ${symbols.length}\n\n`;
+    context += `**Company List (Symbol - Name):**\n`;
+
+    // Get company names for all cached symbols
+    const companyList: string[] = [];
+    for (const symbol of symbols.slice(0, 50)) { // Limit to 50 to keep context manageable
+      const overview = await databaseService.getCompanyOverview(symbol);
+      const name = overview?.name || symbol;
+      companyList.push(`- ${symbol}: ${name}`);
+    }
+
+    context += companyList.join('\n');
+    
+    if (symbols.length > 50) {
+      context += `\n\n...and ${symbols.length - 50} more companies in the database.`;
+    }
+
+    context += `\n\n**Note:** These are companies the user has browsed or searched for. I have detailed financial data for all of them.`;
+
+    return context;
+  }
+
+  /**
    * Build general market context from all cached data + market movers + news + calendars
    * This provides LFM2 with the SAME data the user sees across all app screens
    */
@@ -990,14 +1025,19 @@ class RAGService {
   /**
    * Extract relevant context based on user query
    * FIXED: Better symbol detection - prioritize company names, filter common English words
+   * IMPROVED: Support for multi-company comparison queries
+   * IMPROVED: Check chat history for company context (follow-up questions)
    */
-  async extractRelevantContext(query: string): Promise<string> {
+  async extractRelevantContext(query: string, chatHistory: string = ''): Promise<string> {
     const cleanQuery = query.trim();
     const queryLower = cleanQuery.toLowerCase();
     const allSymbols = await databaseService.getAllCachedSymbols();
 
     console.log(`[RAG] Processing query: "${cleanQuery}"`);
     console.log(`[RAG] Database has ${allSymbols.length} cached symbols:`, allSymbols.slice(0, 10).join(', '));
+    if (chatHistory) {
+      console.log(`[RAG] Chat history available (${chatHistory.length} chars)`);
+    }
 
     // Common English words that happen to be stock symbols - SKIP these in direct matching
     const commonEnglishWords = new Set([
@@ -1010,6 +1050,134 @@ class RAGService {
       'OVER', 'SUCH', 'MAKE', 'LIKE', 'WELL', 'BACK', 'ONLY', 'COME', 'KNOW', 'TAKE', 'YEAR',
       'WHAT', 'WHEN', 'WILL', 'WITH', 'THEM', 'THEN', 'THAN', 'SOME', 'TELL', 'ABOUT', 'REAL'
     ]);
+
+    // =========================================================================
+    // PRIORITY 0: Check chat history for company context (follow-up questions)
+    // If the user is asking a follow-up question (e.g., "what's the CEO?", "what about earnings?"),
+    // we should use the company from the previous conversation
+    // =========================================================================
+    
+    // Keywords that indicate a company-specific follow-up question
+    // These are topics from our API data that only make sense with a specific company
+    const companySpecificKeywords = [
+      // Leadership & Structure
+      'ceo', 'cfo', 'coo', 'cto', 'chief', 'executive', 'officer', 'founder', 'leadership', 'management',
+      'board', 'director', 'chairman', 'president',
+      // Analyst & Ratings (like Morgan Stanley analyst action)
+      'analyst', 'rating', 'upgrade', 'downgrade', 'price target', 'recommendation', 'buy', 'sell', 'hold',
+      'overweight', 'underweight', 'outperform', 'underperform', 'neutral',
+      // Earnings & Financials
+      'earnings', 'revenue', 'profit', 'loss', 'eps', 'income', 'margin', 'guidance', 'forecast',
+      'quarterly', 'annual', 'q1', 'q2', 'q3', 'q4', 'fiscal', 'beat', 'miss',
+      // Balance Sheet & Cash Flow
+      'balance sheet', 'cash flow', 'debt', 'assets', 'liabilities', 'equity', 'cash', 'free cash',
+      'working capital', 'current ratio', 'quick ratio',
+      // Valuation & Metrics
+      'valuation', 'pe ratio', 'p/e', 'pb ratio', 'p/b', 'ps ratio', 'p/s', 'ev/ebitda', 'peg',
+      'market cap', 'enterprise value', 'book value', 'intrinsic',
+      // Ownership & Insiders
+      'insider', 'institution', 'ownership', 'holder', 'shareholder', 'stake', 'bought', 'sold',
+      'purchase', 'transaction', 'filing', 'sec', '13f', '10-k', '10-q', '8-k',
+      // Dividends & Returns
+      'dividend', 'yield', 'payout', 'buyback', 'repurchase', 'return',
+      // Stock Performance
+      'stock', 'share', 'price', 'chart', 'technical', 'indicator', 'moving average', 'rsi', 'macd',
+      'support', 'resistance', 'trend', 'momentum', 'volume', '52 week', '52-week',
+      // Company Info
+      'sector', 'industry', 'business', 'product', 'service', 'competitor', 'competition',
+      'headquarter', 'employee', 'founded', 'history', 'description',
+      // Events & Calendar  
+      'earnings date', 'ex-dividend', 'split', 'event', 'conference', 'call',
+      // Analysis Questions
+      'outlook', 'future', 'growth', 'risk', 'opportunity', 'strength', 'weakness',
+      'invest', 'portfolio', 'position', 'allocation'
+    ];
+    
+    // Check if current query is asking about company-specific topics
+    const isCompanySpecificQuery = companySpecificKeywords.some(kw => queryLower.includes(kw));
+    
+    // Helper function to check if a symbol/word appears as a standalone word (not inside another word)
+    const isStandaloneWord = (text: string, word: string): boolean => {
+      // Use word boundary regex to avoid matching "AR" inside "market", "car", etc.
+      const regex = new RegExp(`\\b${word}\\b`, 'i');
+      return regex.test(text);
+    };
+    
+    if (chatHistory && chatHistory.trim()) {
+      const historyLower = chatHistory.toLowerCase();
+      
+      // If query is about company-specific topics, prioritize finding company from history
+      if (isCompanySpecificQuery) {
+        console.log(`[RAG] Query contains company-specific keywords - checking chat history for context`);
+      }
+      
+      // PRIORITY: Check for company names FIRST (more reliable than short symbols)
+      // This prevents "AR" matching inside "market" before "Tesla" is found
+      const historyCompanyMap: { [key: string]: string } = {
+        'apple': 'AAPL', 'microsoft': 'MSFT', 'google': 'GOOGL', 'alphabet': 'GOOGL',
+        'amazon': 'AMZN', 'tesla': 'TSLA', 'meta': 'META', 'facebook': 'META',
+        'nvidia': 'NVDA', 'netflix': 'NFLX', 'amd': 'AMD', 'intel': 'INTC',
+        'broadcom': 'AVGO', 'qualcomm': 'QCOM', 'salesforce': 'CRM', 'oracle': 'ORCL',
+        'adobe': 'ADBE', 'cisco': 'CSCO', 'ibm': 'IBM', 'walmart': 'WMT',
+        'costco': 'COST', 'home depot': 'HD', 'target': 'TGT', 'nike': 'NKE',
+        'disney': 'DIS', 'starbucks': 'SBUX', 'mcdonalds': 'MCD', 'chevron': 'CVX',
+        'exxon': 'XOM', 'jpmorgan': 'JPM', 'goldman': 'GS', 'berkshire': 'BRK-B',
+        'visa': 'V', 'mastercard': 'MA', 'palantir': 'PLTR', 'uber': 'UBER', 'lyft': 'LYFT',
+        'paypal': 'PYPL', 'square': 'SQ', 'block': 'SQ', 'shopify': 'SHOP',
+        'spotify': 'SPOT', 'zoom': 'ZM', 'snowflake': 'SNOW', 'crowdstrike': 'CRWD',
+        'datadog': 'DDOG', 'mongodb': 'MDB', 'twilio': 'TWLO', 'okta': 'OKTA',
+        'coinbase': 'COIN', 'robinhood': 'HOOD', 'airbnb': 'ABNB', 'doordash': 'DASH',
+        'rivian': 'RIVN', 'lucid': 'LCID', 'nio': 'NIO', 'xpeng': 'XPEV', 'li auto': 'LI',
+        'boeing': 'BA', 'lockheed': 'LMT', 'raytheon': 'RTX', 'northrop': 'NOC',
+        'pfizer': 'PFE', 'moderna': 'MRNA', 'johnson': 'JNJ', 'merck': 'MRK', 'abbvie': 'ABBV',
+        'unitedhealth': 'UNH', 'cigna': 'CI', 'humana': 'HUM', 'cvs': 'CVS',
+        'coca-cola': 'KO', 'coca cola': 'KO', 'pepsi': 'PEP', 'pepsico': 'PEP',
+        'procter': 'PG', 'p&g': 'PG', 'colgate': 'CL', 'unilever': 'UL',
+        'at&t': 'T', 'verizon': 'VZ', 't-mobile': 'TMUS', 'comcast': 'CMCSA',
+        'bank of america': 'BAC', 'wells fargo': 'WFC', 'citigroup': 'C', 'citi': 'C',
+        'morgan stanley': 'MS', 'charles schwab': 'SCHW', 'blackrock': 'BLK',
+        'caterpillar': 'CAT', 'deere': 'DE', 'john deere': 'DE', '3m': 'MMM',
+        'honeywell': 'HON', 'general electric': 'GE', 'ge': 'GE', 'siemens': 'SIEGY'
+      };
+      
+      // Check company names first (more reliable than short symbols)
+      for (const [companyName, symbol] of Object.entries(historyCompanyMap)) {
+        if (isStandaloneWord(historyLower, companyName) && allSymbols.includes(symbol)) {
+          console.log(`[RAG] Found company "${companyName}" (${symbol}) in chat history - using for context`);
+          return await this.buildCompanyContext(symbol);
+        }
+      }
+      
+      // Then check for direct symbol mentions in history (e.g., "about TSLA", "analyzed AAPL")
+      // Use word boundary matching to avoid "AR" matching inside "market", "car", etc.
+      // Also skip very short symbols (1-2 chars) as they're prone to false positives
+      for (const sym of allSymbols) {
+        // Skip short symbols in history matching (too many false positives)
+        if (sym.length <= 2) continue;
+        
+        if (isStandaloneWord(historyLower, sym)) {
+          console.log(`[RAG] Found symbol ${sym} in chat history - using for context`);
+          return await this.buildCompanyContext(sym);
+        }
+      }
+      
+      // If query is company-specific but no company found in history, 
+      // try to find ANY company that was discussed (from database names)
+      if (isCompanySpecificQuery) {
+        for (const sym of allSymbols) {
+          const overview = await databaseService.getCompanyOverview(sym);
+          if (overview && overview.name) {
+            const nameLower = overview.name.toLowerCase();
+            // Check if company name appears in history (using word boundary for multi-word names)
+            if (isStandaloneWord(historyLower, nameLower) || 
+                nameLower.split(/[\s,]+/).some(word => word.length >= 5 && isStandaloneWord(historyLower, word))) {
+              console.log(`[RAG] Found company "${overview.name}" (${sym}) in chat history via DB lookup`);
+              return await this.buildCompanyContext(sym);
+            }
+          }
+        }
+      }
+    }
 
     // 1. Company Name Match FIRST (e.g., "Apple", "Microsoft", "Tesla", "Amazon", "Nvidia")
     // Use hardcoded mapping for common symbols (faster + no DB dependency)
@@ -1069,26 +1237,59 @@ class RAGService {
       'american express': 'AXP',
       'amex': 'AXP',
     };
+
+    // =========================================================================
+    // NEW: Detect ALL mentioned companies FIRST (for comparison queries)
+    // =========================================================================
+    const mentionedSymbols: Set<string> = new Set();
     
+    // Check common company names
     for (const [companyName, symbol] of Object.entries(commonCompanies)) {
       if (queryLower.includes(companyName) && allSymbols.includes(symbol)) {
-        console.log(`[RAG] Found common company match: ${companyName} -> ${symbol}`);
-        return await this.buildCompanyContext(symbol);
+        mentionedSymbols.add(symbol);
       }
     }
-
-    // 2. Direct Symbol Match - Look for exact ticker symbols (2-5 uppercase letters)
-    // ONLY if NOT a common English word
-    const words = cleanQuery.toUpperCase().split(/\s+/);
+    
+    // Also check direct symbol mentions (e.g., "AAPL vs MSFT")
+    const words = cleanQuery.toUpperCase().split(/[\s,]+/);
     for (const word of words) {
-      // Check if word matches a cached symbol (must be 2-5 chars, in our DB, and NOT a common word)
       if (word.length >= 2 && word.length <= 5 && 
           allSymbols.includes(word) && 
           !commonEnglishWords.has(word)) {
-        console.log(`[RAG] Found direct symbol match: ${word}`);
-        return await this.buildCompanyContext(word);
+        mentionedSymbols.add(word);
       }
     }
+    
+    // Detect comparison keywords
+    const comparisonKeywords = ['compare', 'versus', ' vs ', ' vs.', 'between', 'better', 'which one', 'difference', 'invest'];
+    const isComparisonQuery = comparisonKeywords.some(k => queryLower.includes(k));
+    
+    // If multiple companies found - build combined context
+    if (mentionedSymbols.size >= 2) {
+      const symbolsArray = Array.from(mentionedSymbols);
+      console.log(`[RAG] Multi-company query detected: ${symbolsArray.join(', ')}`);
+      
+      // Build combined context for comparison (limit to 3 companies max for context size)
+      const contexts: string[] = [];
+      for (const sym of symbolsArray.slice(0, 3)) {
+        console.log(`[RAG] Building context for comparison: ${sym}`);
+        const context = await this.buildCompanyContext(sym);
+        contexts.push(context);
+      }
+      
+      const combinedContext = contexts.join('\n\n---\n\n');
+      console.log(`[RAG] Built comparison context for ${symbolsArray.length} companies`);
+      return `${combinedContext}\n\n---\n\n**Comparison Request:** The user wants to compare ${symbolsArray.join(' vs ')}. Analyze the financial data above to provide a comprehensive comparison.`;
+    }
+    
+    // Single company found - return its context
+    if (mentionedSymbols.size === 1) {
+      const symbol = Array.from(mentionedSymbols)[0];
+      console.log(`[RAG] Found single company match: ${symbol}`);
+      return await this.buildCompanyContext(symbol);
+    }
+    
+    // No companies found from common names - continue with fallback methods
     
     // 3. Check company overview (includes full name) for other companies
     for (const sym of allSymbols) {
@@ -1167,18 +1368,26 @@ class RAGService {
       return await this.buildMarketContext();
     }
 
-    // 10. Market Overview Keywords
+    // 10. Browse Stocks / Company List queries - show cached company names
+    const browseKeywords = ['browse', 'list', 'companies', 'stocks screen', 'what companies', 'which companies', 'company names', 'stock names', 'all stocks', 'available stocks', 'see the names', 'their names'];
+    if (browseKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] Detected browse stocks / company list query`);
+      return await this.buildCachedCompaniesContext();
+    }
+
+    // 11. Market Overview Keywords
     const marketKeywords = ['market', 'overview', 'sector', 'industry', 'trends', 'summary'];
     if (marketKeywords.some(k => queryLower.includes(k))) {
       console.log(`[RAG] Building comprehensive market overview context`);
       return await this.buildMarketContext();
     }
 
-    // 11. General questions with available data
+    // 12. General questions with available data
     if (allSymbols.length > 0) {
       console.log(`[RAG] No specific match, showing available companies`);
-      const preview = await this.buildMarketContext();
-      return `${preview}\n\n**Available Companies:** ${allSymbols.slice(0, 20).join(', ')}${allSymbols.length > 20 ? ` and ${allSymbols.length - 20} more...` : ''}\n\nThe user asked: "${cleanQuery}"`;
+      // Include company names list for better context
+      const companiesList = await this.buildCachedCompaniesContext();
+      return `${companiesList}\n\nThe user asked: "${cleanQuery}"`;
     }
 
     // 12. No data available
@@ -1193,28 +1402,51 @@ class RAGService {
    * @param chatHistory - Formatted conversation history (optional)
    */
   async formatPromptForLLM(userQuery: string, chatHistory: string = ''): Promise<string> {
-    const context = await this.extractRelevantContext(userQuery);
+    // Pass chat history to context extraction for follow-up questions
+    const context = await this.extractRelevantContext(userQuery, chatHistory);
     
     const date = new Date().toISOString().split('T')[0];
 
+    // Build the user message with clear sections
+    let userMessage = '';
+    
+    // 1. Chat History FIRST (if exists) - provides conversation context
+    if (chatHistory && chatHistory.trim()) {
+      userMessage += `${chatHistory}\n---\n\n`;
+    }
+    
+    // 2. Financial Data Context
+    userMessage += `**Financial Data Context:**\n${context}\n\n---\n\n`;
+    
+    // 3. Current Question (with reminder about history if applicable)
+    if (chatHistory && chatHistory.trim()) {
+      userMessage += `**Current Question** (continuing the conversation above): ${userQuery}`;
+    } else {
+      userMessage += `**Question:** ${userQuery}`;
+    }
+
     // ChatML format for LFM2-1.2B-RAG (optimized for document-based Q&A)
-    // System prompt: Optional but recommended for output language and behavior control
-    // Context: Must be in user message (LFM2 is trained for this pattern)
+    // System prompt explains the context structure
     const prompt = `<|startoftext|><|im_start|>system
-You are FinAI, an expert financial analyst. Always respond in English. Current Date: ${date}. Answer questions based strictly on the provided financial data. If data is missing, state it clearly. Use Markdown formatting with bold for key numbers.<|im_end|>
+You are FinAI, a helpful financial analyst. Date: ${date}.
+
+RESPONSE RULES:
+- Be BRIEF and conversational. 2-4 sentences for simple questions, max 6-8 for complex analysis.
+- Do NOT list or repeat all the financial data back to the user - they can see it on screen.
+- Do NOT start with titles or headers.
+- Answer the specific question asked, nothing more.
+- Use **bold** only for 2-3 key numbers that directly answer the question.
+- For "is it a good investment?" questions: Give a brief opinion with 2-3 supporting reasons, not a full analysis.
+- For CEO/leadership questions: Just state the name and maybe one fact.
+- If asked to compare: Focus on 2-3 key differences, not exhaustive lists.<|im_end|>
 <|im_start|>user
-Use the following context to answer questions:
-
-${context}
-${chatHistory}
----
-
-Question: ${userQuery}<|im_end|>
+${userMessage}<|im_end|>
 <|im_start|>assistant
 `;
 
     console.log('[RAG] Prompt length:', prompt.length, 'chars (~', Math.ceil(prompt.length / 4), 'tokens)');
     console.log('[RAG] Context preview:', context.substring(0, 200) + '...');
+    
     
     return prompt;
   }

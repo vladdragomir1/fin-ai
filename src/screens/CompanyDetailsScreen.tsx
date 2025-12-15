@@ -710,8 +710,10 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
               {/* SMA - Simple Moving Average */}
               {technicalIndicators.sma && (() => {
                 const smaData = technicalIndicators.sma;
-                const latestSMA = smaData.values?.[0] || smaData.data?.[0];
-                const smaValue = latestSMA?.value || latestSMA?.SMA || 'N/A';
+                // API returns array directly in body, mock data has values property
+                const dataArray = Array.isArray(smaData) ? smaData : (smaData.values || smaData.data || []);
+                const latestSMA = dataArray[dataArray.length - 1] || dataArray[0]; // Get most recent (last in array)
+                const smaValue = latestSMA?.SMA || latestSMA?.value || 'N/A';
                 return (
                   <View style={styles.indicatorCard}>
                     <View style={styles.indicatorHeader}>
@@ -731,8 +733,10 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
               {/* RSI - Relative Strength Index */}
               {technicalIndicators.rsi && (() => {
                 const rsiData = technicalIndicators.rsi;
-                const latestRSI = rsiData.values?.[0] || rsiData.data?.[0];
-                const rsiValue = latestRSI?.value || latestRSI?.RSI || 0;
+                // API returns array directly in body, mock data has values property
+                const dataArray = Array.isArray(rsiData) ? rsiData : (rsiData.values || rsiData.data || []);
+                const latestRSI = dataArray[dataArray.length - 1] || dataArray[0]; // Get most recent
+                const rsiValue = latestRSI?.RSI || latestRSI?.value || 0;
                 const rsiNum = typeof rsiValue === 'number' ? rsiValue : parseFloat(rsiValue) || 0;
                 
                 // RSI interpretation: <30 oversold, >70 overbought, 30-70 neutral
@@ -765,10 +769,12 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
               {/* MACD - Moving Average Convergence Divergence */}
               {technicalIndicators.macd && (() => {
                 const macdData = technicalIndicators.macd;
-                const latestMACD = macdData.values?.[0] || macdData.data?.[0];
+                // API returns array directly in body, mock data has values property
+                const dataArray = Array.isArray(macdData) ? macdData : (macdData.values || macdData.data || []);
+                const latestMACD = dataArray[dataArray.length - 1] || dataArray[0]; // Get most recent
                 const macdValue = latestMACD?.MACD || latestMACD?.macd || 0;
-                const signalValue = latestMACD?.signal || latestMACD?.MACD_Signal || 0;
-                const histogramValue = latestMACD?.histogram || latestMACD?.MACD_Hist || 0;
+                const signalValue = latestMACD?.MACD_Signal || latestMACD?.signal || 0;
+                const histogramValue = latestMACD?.MACD_Hist || latestMACD?.histogram || 0;
                 
                 const macdNum = typeof macdValue === 'number' ? macdValue : parseFloat(macdValue) || 0;
                 const histNum = typeof histogramValue === 'number' ? histogramValue : parseFloat(histogramValue) || 0;
@@ -796,8 +802,10 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
               {/* ADX - Average Directional Index */}
               {technicalIndicators.adx && (() => {
                 const adxData = technicalIndicators.adx;
-                const latestADX = adxData.values?.[0] || adxData.data?.[0];
-                const adxValue = latestADX?.value || latestADX?.ADX || 0;
+                // API returns array directly in body, mock data has values property
+                const dataArray = Array.isArray(adxData) ? adxData : (adxData.values || adxData.data || []);
+                const latestADX = dataArray[dataArray.length - 1] || dataArray[0]; // Get most recent
+                const adxValue = latestADX?.ADX || latestADX?.value || 0;
                 const adxNum = typeof adxValue === 'number' ? adxValue : parseFloat(adxValue) || 0;
                 
                 // ADX interpretation: <20 weak trend, 20-40 strong trend, >40 very strong trend
