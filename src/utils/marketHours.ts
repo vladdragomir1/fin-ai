@@ -314,6 +314,15 @@ export const getIndicatorCacheTTL = (): number => {
 };
 
 /**
+ * Get TTL for market tickers (browse stocks) cache
+ * Static company list data - can be cached longer
+ * - Always: 24 hours (names/symbols rarely change)
+ */
+export const getTickersCacheTTL = (): number => {
+  return 24 * 60 * 60 * 1000; // 24 hours - company list is fairly static
+};
+
+/**
  * Get market status string for UI display
  */
 export const getMarketStatus = (): 'open' | 'pre-market' | 'after-hours' | 'closed' => {

@@ -10,9 +10,9 @@ import {
 import { 
   Building2,
   AlertCircle,
-  ChevronRight,
   TrendingUp,
-  TrendingDown
+  TrendingDown,
+  Star
 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -20,12 +20,14 @@ import { ScreenShell } from '@/components';
 import { palette, spacing, layout } from '@/theme';
 import { financeApiService } from '@/services/financeApiService';
 import { tradingViewPriceService } from '@/services/tradingViewPriceService';
+import { useWatchlist } from '@/context/WatchlistContext';
 import type { RootStackParamList } from '@/navigation/types';
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
 export const BrowseStocksScreen = () => {
   const navigation = useNavigation<NavigationProp>();
+  const { addToWatchlist, removeFromWatchlist, isInWatchlist } = useWatchlist();
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [stocks, setStocks] = useState<any[]>([]);
@@ -87,6 +89,15 @@ export const BrowseStocksScreen = () => {
     });
   };
 
+  const handleToggleFavorite = async (stock: any) => {
+    const name = stock.name || stock.shortName || stock.longName || stock.symbol;
+    if (isInWatchlist(stock.symbol)) {
+      await removeFromWatchlist(stock.symbol);
+    } else {
+      await addToWatchlist(stock.symbol, name);
+    }
+  };
+
   const formatMarketCap = (value: number | string) => {
     const num = typeof value === 'string' ? parseFloat(value) : value;
     if (num >= 1e12) return `$${(num / 1e12).toFixed(2)}T`;
@@ -104,6 +115,7 @@ export const BrowseStocksScreen = () => {
     const isPositive = (displayChangePercent || 0) >= 0;
     const ChangeIcon = isPositive ? TrendingUp : TrendingDown;
     const changeColor = isPositive ? palette.success : palette.danger;
+    const isFavorite = isInWatchlist(item.symbol);
 
     return (
       <TouchableOpacity 
@@ -155,8 +167,19 @@ export const BrowseStocksScreen = () => {
           )}
         </View>
 
-        {/* Arrow */}
-        <ChevronRight size={16} color={palette.surfaceHighlight} style={{ marginLeft: spacing.xs }} />
+        {/* Favorite Button */}
+        <TouchableOpacity 
+          onPress={() => handleToggleFavorite(item)}
+          style={styles.favoriteButton}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Star 
+            size={20} 
+            color={isFavorite ? palette.warning : palette.mutedText} 
+            fill={isFavorite ? palette.warning : 'transparent'}
+            strokeWidth={1.5}
+          />
+        </TouchableOpacity>
       </TouchableOpacity>
     );
   };
@@ -349,6 +372,12 @@ const styles = StyleSheet.create({
   miniChangeText: {
     fontSize: 11,
     fontWeight: '700',
+  },
+  
+  // Favorite Button
+  favoriteButton: {
+    padding: spacing.sm,
+    marginLeft: spacing.xs,
   },
 
   // Footer Loader

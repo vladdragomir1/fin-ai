@@ -8,7 +8,8 @@ import {
   getMarketDataCacheTTL,
   getNewsCacheTTL,
   getCalendarCacheTTL,
-  getIndicatorCacheTTL 
+  getIndicatorCacheTTL,
+  getTickersCacheTTL
 } from '@/utils/marketHours';
 
 interface SearchCacheEntry {
@@ -699,6 +700,8 @@ class DatabaseService {
         effectiveMaxAge = getCalendarCacheTTL();
       } else if (cacheKey.startsWith('indicator_')) {
         effectiveMaxAge = getIndicatorCacheTTL();
+      } else if (cacheKey.startsWith('tickers_')) {
+        effectiveMaxAge = getTickersCacheTTL(); // 24hr for browse stocks
       } else {
         effectiveMaxAge = getMarketDataCacheTTL(); // Default for screeners
       }
