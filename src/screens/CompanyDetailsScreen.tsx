@@ -18,10 +18,12 @@ import {
   Briefcase,
   Users,
   Globe,
-  AlertCircle // Added for empty state
+  AlertCircle, // Added for empty state
+  Star
 } from 'lucide-react-native';
 
 import { ScreenShell, TradingViewChart, DataFreshnessBadge } from '@/components';
+import { useWatchlist } from '@/context/WatchlistContext';
 import { financeApiService } from '@/services/financeApiService';
 import { tradingViewPriceService } from '@/services/tradingViewPriceService';
 import { palette, spacing, layout } from '@/theme';
@@ -34,15 +36,31 @@ type AllowedRange = '1D' | '1M' | '6M' | '1Y' | '5Y' | 'ALL';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CompanyDetails'>;
 
+// Helper to safely render any value as string
+const safeString = (value: any, fallback: string = 'N/A'): string => {
+  if (value == null) return fallback;
+  if (typeof value === 'string') return value || fallback;
+  if (typeof value === 'number') return isNaN(value) ? fallback : String(value);
+  if (typeof value === 'object') return fallback;
+  return String(value) || fallback;
+};
+
+// Helper to safely render numbers
+const safeNumber = (value: any, fallback: number = 0): number => {
+  if (value == null) return fallback;
+  const num = typeof value === 'number' ? value : parseFloat(String(value));
+  return isNaN(num) ? fallback : num;
+};
+
 // --- LOCAL UI COMPONENTS ---
 const DetailCard = ({ label, value, icon: Icon, color = palette.text }: any) => (
   <View style={styles.detailCard}>
     <View style={styles.detailHeader}>
-      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={styles.detailLabel}>{safeString(label)}</Text>
       {Icon && <Icon size={14} color={palette.mutedText} />}
     </View>
     <Text style={[styles.detailValue, { color }]} numberOfLines={1} adjustsFontSizeToFit>
-      {value}
+      {safeString(value, '-')}
     </Text>
   </View>
 );
@@ -67,6 +85,7 @@ const RangeSelector = ({ selected, onSelect }: { selected: string, onSelect: (r:
 
 export const CompanyDetailsScreen = ({ route }: Props) => {
   const { symbol, name } = route.params;
+  const { addToWatchlist, removeFromWatchlist, isInWatchlist } = useWatchlist();
   
   // Data States
   const [loading, setLoading] = useState(true);
@@ -123,6 +142,14 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
       console.warn('Failed to switch range', e);
     } finally {
       setChartLoading(false);
+    }
+  };
+
+  const handleToggleWatchlist = async () => {
+    if (isInWatchlist(symbol)) {
+      await removeFromWatchlist(symbol);
+    } else {
+      await addToWatchlist(symbol, name);
     }
   };
 
@@ -230,6 +257,18 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
               <Text style={styles.symbolText}>{symbol}</Text>
             </View>
             <Text style={styles.companyName} numberOfLines={1}>{name}</Text>
+            <TouchableOpacity 
+              onPress={handleToggleWatchlist}
+              style={styles.favoriteButton}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Star 
+                size={22} 
+                color={isInWatchlist(symbol) ? palette.warning : palette.mutedText} 
+                fill={isInWatchlist(symbol) ? palette.warning : 'transparent'}
+                strokeWidth={isInWatchlist(symbol) ? 2 : 1.5}
+              />
+            </TouchableOpacity>
           </View>
 
           {displayPrice && (
@@ -281,17 +320,13 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                 <View style={styles.chartCenterInfo}>
                    <ActivityIndicator color={palette.mutedText} />
                 </View>
-             ) : chartData.length > 0 ? (
+             ) : (
                 <TradingViewChart 
                   symbol={symbol} 
                   height={280}
+                  range={selectedRange}
                   onPriceUpdate={handleTradingViewPriceUpdate}
                 />
-             ) : (
-                <View style={styles.chartCenterInfo}>
-                   <AlertCircle color={palette.mutedText} size={24} />
-                   <Text style={{color: palette.mutedText, marginTop: 8}}>No chart data available</Text>
-                </View>
              )}
           </View>
         </View>
@@ -336,10 +371,10 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                 value={metrics.dividendYield ? `${metrics.dividendYield.toFixed(2)}%` : '-'} 
                 color={palette.success}
               />
-              {metrics.weekHigh52 && (
+              {metrics.weekHigh52 != null && (
                  <DetailCard label="52W High" value={`$${metrics.weekHigh52.toFixed(2)}`} />
               )}
-               {metrics.weekLow52 && (
+               {metrics.weekLow52 != null && (
                  <DetailCard label="52W Low" value={`$${metrics.weekLow52.toFixed(2)}`} />
               )}
             </View>
@@ -469,13 +504,13 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         {earningsHistory?.history && earningsHistory.history.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionHeader}>EARNINGS HISTORY</Text>
-            {earningsHistory.history.slice(0, 4).map((earning: any, idx: number) => {
+            {earningsHistory.history.filter((e: any) => e != null && typeof e === 'object').slice(0, 4).map((earning: any, idx: number) => {
               const beat = earning.surprisePercent?.raw && earning.surprisePercent.raw > 0;
               const miss = earning.surprisePercent?.raw && earning.surprisePercent.raw < 0;
               return (
                 <View key={idx} style={styles.earningCard}>
                   <View style={styles.earningRow}>
-                    <Text style={styles.earningQuarter}>{earning.quarter?.fmt || 'N/A'}</Text>
+                    <Text style={styles.earningQuarter}>{String(earning.quarter?.fmt || 'N/A')}</Text>
                     <View style={[styles.earningBadge, { backgroundColor: beat ? palette.successBg : miss ? palette.dangerBg : palette.surfaceLight }]}>
                       <Text style={[styles.earningBadgeText, { color: beat ? palette.success : miss ? palette.danger : palette.mutedText }]}>
                         {beat ? 'Beat' : miss ? 'Miss' : 'Met'}
@@ -485,16 +520,16 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                   <View style={styles.earningDetails}>
                     <View style={styles.earningCol}>
                       <Text style={styles.earningLabel}>Actual EPS</Text>
-                      <Text style={styles.earningValue}>${earning.epsActual?.fmt || 'N/A'}</Text>
+                      <Text style={styles.earningValue}>${String(earning.epsActual?.fmt || 'N/A')}</Text>
                     </View>
                     <View style={styles.earningCol}>
                       <Text style={styles.earningLabel}>Estimate</Text>
-                      <Text style={styles.earningValue}>${earning.epsEstimate?.fmt || 'N/A'}</Text>
+                      <Text style={styles.earningValue}>${String(earning.epsEstimate?.fmt || 'N/A')}</Text>
                     </View>
                     <View style={styles.earningCol}>
                       <Text style={styles.earningLabel}>Difference</Text>
                       <Text style={[styles.earningValue, { color: beat ? palette.success : miss ? palette.danger : palette.text }]}>
-                        ${earning.epsDifference?.fmt || 'N/A'}
+                        ${String(earning.epsDifference?.fmt || 'N/A')}
                       </Text>
                     </View>
                   </View>
@@ -508,7 +543,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         {recommendationTrend?.trend && recommendationTrend.trend.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionHeader}>ANALYST RATINGS</Text>
-            {recommendationTrend.trend.slice(0, 1).map((rec: any, idx: number) => {
+            {recommendationTrend.trend.filter((r: any) => r != null && typeof r === 'object').slice(0, 1).map((rec: any, idx: number) => {
               const total = (rec.strongBuy || 0) + (rec.buy || 0) + (rec.hold || 0) + (rec.sell || 0) + (rec.strongSell || 0);
               const strongBuyPct = total > 0 ? ((rec.strongBuy || 0) / total) * 100 : 0;
               const buyPct = total > 0 ? ((rec.buy || 0) / total) * 100 : 0;
@@ -518,7 +553,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
               
               return (
                 <View key={idx} style={styles.ratingCard}>
-                  <Text style={styles.ratingPeriod}>{rec.period || 'Current Month'}</Text>
+                  <Text style={styles.ratingPeriod}>{String(rec.period || 'Current Month')}</Text>
                   <View style={styles.ratingBar}>
                     {strongBuyPct > 0 && <View style={[styles.ratingSegment, { width: `${strongBuyPct}%`, backgroundColor: '#059669' }]} />}
                     {buyPct > 0 && <View style={[styles.ratingSegment, { width: `${buyPct}%`, backgroundColor: '#10b981' }]} />}
@@ -529,23 +564,23 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                   <View style={styles.ratingLegend}>
                     <View style={styles.ratingItem}>
                       <View style={[styles.ratingDot, { backgroundColor: '#059669' }]} />
-                      <Text style={styles.ratingText}>Strong Buy: {rec.strongBuy || 0}</Text>
+                      <Text style={styles.ratingText}>Strong Buy: {Number(rec.strongBuy) || 0}</Text>
                     </View>
                     <View style={styles.ratingItem}>
                       <View style={[styles.ratingDot, { backgroundColor: '#10b981' }]} />
-                      <Text style={styles.ratingText}>Buy: {rec.buy || 0}</Text>
+                      <Text style={styles.ratingText}>Buy: {Number(rec.buy) || 0}</Text>
                     </View>
                     <View style={styles.ratingItem}>
                       <View style={[styles.ratingDot, { backgroundColor: '#6b7280' }]} />
-                      <Text style={styles.ratingText}>Hold: {rec.hold || 0}</Text>
+                      <Text style={styles.ratingText}>Hold: {Number(rec.hold) || 0}</Text>
                     </View>
                     <View style={styles.ratingItem}>
                       <View style={[styles.ratingDot, { backgroundColor: '#ef4444' }]} />
-                      <Text style={styles.ratingText}>Sell: {rec.sell || 0}</Text>
+                      <Text style={styles.ratingText}>Sell: {Number(rec.sell) || 0}</Text>
                     </View>
                     <View style={styles.ratingItem}>
                       <View style={[styles.ratingDot, { backgroundColor: '#dc2626' }]} />
-                      <Text style={styles.ratingText}>Strong Sell: {rec.strongSell || 0}</Text>
+                      <Text style={styles.ratingText}>Strong Sell: {Number(rec.strongSell) || 0}</Text>
                     </View>
                   </View>
                 </View>
@@ -555,39 +590,51 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         )}
 
         {/* 9. Upgrade/Downgrade History */}
-        {upgradeDowngradeHistory?.history && upgradeDowngradeHistory.history.length > 0 && (
+        {upgradeDowngradeHistory?.history && Array.isArray(upgradeDowngradeHistory.history) && upgradeDowngradeHistory.history.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionHeader}>RECENT ANALYST ACTIONS</Text>
-            {upgradeDowngradeHistory.history.slice(0, 5).map((action: any, idx: number) => {
-              const isUpgrade = action.action?.toLowerCase().includes('up') || action.toGrade?.toLowerCase().includes('buy');
-              const isDowngrade = action.action?.toLowerCase().includes('down') || action.toGrade?.toLowerCase().includes('sell');
-              
-              return (
-                <View key={idx} style={styles.actionCard}>
-                  <View style={styles.actionHeader}>
-                    <Text style={styles.actionFirm}>{action.firm || 'Analyst'}</Text>
-                    <View style={[styles.actionBadge, { backgroundColor: isUpgrade ? palette.successBg : isDowngrade ? palette.dangerBg : palette.surfaceLight }]}>
-                      <Text style={[styles.actionBadgeText, { color: isUpgrade ? palette.success : isDowngrade ? palette.danger : palette.mutedText }]}>
-                        {action.action || 'Maintained'}
-                      </Text>
+            {upgradeDowngradeHistory.history
+              .filter((a: any) => a != null && typeof a === 'object' && !Array.isArray(a))
+              .slice(0, 5)
+              .map((action: any, idx: number) => {
+                const actionStr = typeof action.action === 'string' ? action.action.toLowerCase() : '';
+                const toGradeStr = typeof action.toGrade === 'string' ? action.toGrade.toLowerCase() : '';
+                const isUpgrade = actionStr.includes('up') || toGradeStr.includes('buy');
+                const isDowngrade = actionStr.includes('down') || toGradeStr.includes('sell');
+                const firmName = typeof action.firm === 'string' ? action.firm : 'Analyst';
+                const actionName = typeof action.action === 'string' ? action.action : 'Maintained';
+                const fromGrade = typeof action.fromGrade === 'string' ? action.fromGrade : '';
+                const toGrade = typeof action.toGrade === 'string' ? action.toGrade : 'N/A';
+                const priceTarget = action.currentPriceTarget?.fmt || action.currentPriceTarget?.raw;
+                const priceTargetStr = priceTarget != null ? String(priceTarget) : null;
+                const gradeDate = typeof action.epochGradeDate === 'number' 
+                  ? new Date(action.epochGradeDate * 1000).toLocaleDateString() 
+                  : 'N/A';
+                
+                return (
+                  <View key={idx} style={styles.actionCard}>
+                    <View style={styles.actionHeader}>
+                      <Text style={styles.actionFirm}>{firmName}</Text>
+                      <View style={[styles.actionBadge, { backgroundColor: isUpgrade ? palette.successBg : isDowngrade ? palette.dangerBg : palette.surfaceLight }]}>
+                        <Text style={[styles.actionBadgeText, { color: isUpgrade ? palette.success : isDowngrade ? palette.danger : palette.mutedText }]}>
+                          {actionName}
+                        </Text>
+                      </View>
                     </View>
-                  </View>
-                  <View style={styles.actionDetails}>
-                    <Text style={styles.actionGrade}>
-                      {action.fromGrade ? `${action.fromGrade} → ` : ''}{action.toGrade || 'N/A'}
-                    </Text>
-                    {action.currentPriceTarget && (
-                      <Text style={styles.actionTarget}>
-                        Price Target: ${action.currentPriceTarget.fmt || action.currentPriceTarget.raw || 'N/A'}
+                    <View style={styles.actionDetails}>
+                      <Text style={styles.actionGrade}>
+                        {fromGrade ? `${fromGrade} -> ${toGrade}` : toGrade}
                       </Text>
-                    )}
+                      {priceTargetStr != null && (
+                        <Text style={styles.actionTarget}>
+                          {`Price Target: $${priceTargetStr}`}
+                        </Text>
+                      )}
+                    </View>
+                    <Text style={styles.actionDate}>{gradeDate}</Text>
                   </View>
-                  <Text style={styles.actionDate}>
-                    {action.epochGradeDate ? new Date(action.epochGradeDate * 1000).toLocaleDateString() : 'N/A'}
-                  </Text>
-                </View>
-              );
-            })}
+                );
+              })}
           </View>
         )}
 
@@ -595,25 +642,25 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         {(institutionOwnership || insiderHolders) && (
           <View style={styles.section}>
             <Text style={styles.sectionHeader}>OWNERSHIP & INSIDER ACTIVITY</Text>
-            {institutionOwnership?.ownershipList?.slice(0, 3).map((owner: any, idx: number) => (
+            {institutionOwnership?.ownershipList?.filter((o: any) => o != null && typeof o === 'object').slice(0, 3).map((owner: any, idx: number) => (
               <View key={idx} style={styles.ownerCard}>
                 <View style={styles.ownerRow}>
-                  <Text style={styles.ownerName}>{owner.organization}</Text>
-                  <Text style={styles.ownerValue}>{owner.pctHeld?.fmt || 'N/A'}</Text>
+                  <Text style={styles.ownerName}>{String(owner.organization || 'N/A')}</Text>
+                  <Text style={styles.ownerValue}>{String(owner.pctHeld?.fmt || 'N/A')}</Text>
                 </View>
                 <Text style={styles.ownerShares}>
-                  {owner.position?.fmt} shares • {owner.reportDate?.fmt}
+                  {String(owner.position?.fmt || 'N/A')} shares | {String(owner.reportDate?.fmt || 'N/A')}
                 </Text>
               </View>
             ))}
-            {insiderHolders?.holders?.slice(0, 5).map((holder: any, idx: number) => (
+            {insiderHolders?.holders?.filter((h: any) => h != null && typeof h === 'object').slice(0, 5).map((holder: any, idx: number) => (
               <View key={idx} style={styles.insiderCard}>
                 <View style={styles.insiderRow}>
-                  <Text style={styles.insiderName}>{holder.name || 'N/A'}</Text>
-                  <Text style={styles.insiderRelation}>{holder.relation || 'N/A'}</Text>
+                  <Text style={styles.insiderName}>{String(holder.name || 'N/A')}</Text>
+                  <Text style={styles.insiderRelation}>{String(holder.relation || 'N/A')}</Text>
                 </View>
                 <Text style={styles.insiderDetails}>
-                  {holder.transactionDescription || 'No recent transactions'}
+                  {String(holder.transactionDescription || 'No recent transactions')}
                 </Text>
               </View>
             ))}
@@ -624,16 +671,16 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
         {secFilings?.filings && secFilings.filings.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionHeader}>SEC FILINGS</Text>
-            {secFilings.filings.slice(0, 8).map((filing: any, idx: number) => (
+            {secFilings.filings.filter((f: any) => f != null && typeof f === 'object').slice(0, 8).map((filing: any, idx: number) => (
               <View key={idx} style={styles.filingCard}>
                 <View style={styles.filingHeader}>
                   <View style={styles.filingType}>
-                    <Text style={styles.filingTypeText}>{filing.type || 'N/A'}</Text>
+                    <Text style={styles.filingTypeText}>{String(filing.type || 'N/A')}</Text>
                   </View>
-                  <Text style={styles.filingDate}>{filing.date || 'N/A'}</Text>
+                  <Text style={styles.filingDate}>{String(filing.date || 'N/A')}</Text>
                 </View>
                 <Text style={styles.filingTitle} numberOfLines={2}>
-                  {filing.title || 'No title'}
+                  {String(filing.title || 'No title')}
                 </Text>
               </View>
             ))}
@@ -645,13 +692,13 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
           <View style={styles.section}>
             <Text style={styles.sectionHeader}>INDEX GROWTH ESTIMATES</Text>
             <View style={styles.indexCard}>
-              <Text style={styles.indexSymbol}>{indexTrend.symbol || 'Market Index'}</Text>
+              <Text style={styles.indexSymbol}>{String(indexTrend.symbol || 'Market Index')}</Text>
               <View style={styles.indexGrid}>
-                {indexTrend.estimates.map((est: any, idx: number) => (
+                {indexTrend.estimates.filter((e: any) => e != null && typeof e === 'object').map((est: any, idx: number) => (
                   <View key={idx} style={styles.indexItem}>
-                    <Text style={styles.indexPeriod}>{est.period}</Text>
+                    <Text style={styles.indexPeriod}>{String(est.period || 'N/A')}</Text>
                     <Text style={styles.indexGrowth}>
-                      {est.growth?.fmt ? `${(parseFloat(est.growth.fmt) * 100).toFixed(1)}%` : 'N/A'}
+                      {est.growth?.fmt ? `${(parseFloat(String(est.growth.fmt)) * 100).toFixed(1)}%` : 'N/A'}
                     </Text>
                   </View>
                 ))}
@@ -669,33 +716,33 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                 <View style={styles.netShareCol}>
                   <Text style={styles.netShareLabel}>Buys</Text>
                   <Text style={[styles.netShareValue, { color: palette.success }]}>
-                    {netSharePurchase.buyInfoCount?.fmt || '0'}
+                    {safeString(netSharePurchase.buyInfoCount?.fmt, '0')}
                   </Text>
-                  <Text style={styles.netShareShares}>{netSharePurchase.buyInfoShares?.fmt || 'N/A'} shares</Text>
-                  <Text style={styles.netSharePercent}>{netSharePurchase.buyPercentInsiderShares?.fmt || '0%'}</Text>
+                  <Text style={styles.netShareShares}>{safeString(netSharePurchase.buyInfoShares?.fmt, 'N/A')} shares</Text>
+                  <Text style={styles.netSharePercent}>{safeString(netSharePurchase.buyPercentInsiderShares?.fmt, '0%')}</Text>
                 </View>
                 <View style={styles.netShareDivider} />
                 <View style={styles.netShareCol}>
                   <Text style={styles.netShareLabel}>Sells</Text>
                   <Text style={[styles.netShareValue, { color: palette.danger }]}>
-                    {netSharePurchase.sellInfoCount?.fmt || '0'}
+                    {safeString(netSharePurchase.sellInfoCount?.fmt, '0')}
                   </Text>
-                  <Text style={styles.netShareShares}>{netSharePurchase.sellInfoShares?.fmt || 'N/A'} shares</Text>
-                  <Text style={styles.netSharePercent}>{netSharePurchase.sellPercentInsiderShares?.fmt || '0%'}</Text>
+                  <Text style={styles.netShareShares}>{safeString(netSharePurchase.sellInfoShares?.fmt, 'N/A')} shares</Text>
+                  <Text style={styles.netSharePercent}>{safeString(netSharePurchase.sellPercentInsiderShares?.fmt, '0%')}</Text>
                 </View>
                 <View style={styles.netShareDivider} />
                 <View style={styles.netShareCol}>
                   <Text style={styles.netShareLabel}>Net</Text>
-                  <Text style={[styles.netShareValue, { color: (netSharePurchase.netInfoShares?.raw || 0) >= 0 ? palette.success : palette.danger }]}>
-                    {netSharePurchase.netInfoCount?.fmt || '0'}
+                  <Text style={[styles.netShareValue, { color: safeNumber(netSharePurchase.netInfoShares?.raw, 0) >= 0 ? palette.success : palette.danger }]}>
+                    {safeString(netSharePurchase.netInfoCount?.fmt, '0')}
                   </Text>
-                  <Text style={styles.netShareShares}>{netSharePurchase.netInfoShares?.fmt || 'N/A'} shares</Text>
-                  <Text style={styles.netSharePercent}>{netSharePurchase.netPercentInsiderShares?.fmt || '0%'}</Text>
+                  <Text style={styles.netShareShares}>{safeString(netSharePurchase.netInfoShares?.fmt, 'N/A')} shares</Text>
+                  <Text style={styles.netSharePercent}>{safeString(netSharePurchase.netPercentInsiderShares?.fmt, '0%')}</Text>
                 </View>
               </View>
               <View style={styles.netShareFooter}>
                 <Text style={styles.netShareFooterText}>
-                  Total Insider Shares: {netSharePurchase.totalInsiderShares?.fmt || 'N/A'}
+                  Total Insider Shares: {safeString(netSharePurchase.totalInsiderShares?.fmt, 'N/A')}
                 </Text>
               </View>
             </View>
@@ -713,7 +760,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                 // API returns array directly in body, mock data has values property
                 const dataArray = Array.isArray(smaData) ? smaData : (smaData.values || smaData.data || []);
                 const latestSMA = dataArray[dataArray.length - 1] || dataArray[0]; // Get most recent (last in array)
-                const smaValue = latestSMA?.SMA || latestSMA?.value || 'N/A';
+                const smaValue = safeNumber(latestSMA?.SMA || latestSMA?.value, 0);
                 return (
                   <View style={styles.indicatorCard}>
                     <View style={styles.indicatorHeader}>
@@ -723,7 +770,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                       </View>
                     </View>
                     <Text style={[styles.indicatorValue, { color: palette.accent }]}>
-                      {typeof smaValue === 'number' ? `$${smaValue.toFixed(2)}` : smaValue}
+                      {smaValue > 0 ? `$${smaValue.toFixed(2)}` : 'N/A'}
                     </Text>
                     <Text style={styles.indicatorLabel}>Moving Average</Text>
                   </View>
@@ -736,8 +783,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                 // API returns array directly in body, mock data has values property
                 const dataArray = Array.isArray(rsiData) ? rsiData : (rsiData.values || rsiData.data || []);
                 const latestRSI = dataArray[dataArray.length - 1] || dataArray[0]; // Get most recent
-                const rsiValue = latestRSI?.RSI || latestRSI?.value || 0;
-                const rsiNum = typeof rsiValue === 'number' ? rsiValue : parseFloat(rsiValue) || 0;
+                const rsiNum = safeNumber(latestRSI?.RSI || latestRSI?.value, 0);
                 
                 // RSI interpretation: <30 oversold, >70 overbought, 30-70 neutral
                 let rsiColor = palette.mutedText;
@@ -772,12 +818,8 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                 // API returns array directly in body, mock data has values property
                 const dataArray = Array.isArray(macdData) ? macdData : (macdData.values || macdData.data || []);
                 const latestMACD = dataArray[dataArray.length - 1] || dataArray[0]; // Get most recent
-                const macdValue = latestMACD?.MACD || latestMACD?.macd || 0;
-                const signalValue = latestMACD?.MACD_Signal || latestMACD?.signal || 0;
-                const histogramValue = latestMACD?.MACD_Hist || latestMACD?.histogram || 0;
-                
-                const macdNum = typeof macdValue === 'number' ? macdValue : parseFloat(macdValue) || 0;
-                const histNum = typeof histogramValue === 'number' ? histogramValue : parseFloat(histogramValue) || 0;
+                const macdNum = safeNumber(latestMACD?.MACD || latestMACD?.macd, 0);
+                const histNum = safeNumber(latestMACD?.MACD_Hist || latestMACD?.histogram, 0);
                 
                 // MACD interpretation: positive histogram = bullish, negative = bearish
                 const macdColor = histNum >= 0 ? palette.success : palette.danger;
@@ -805,8 +847,7 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                 // API returns array directly in body, mock data has values property
                 const dataArray = Array.isArray(adxData) ? adxData : (adxData.values || adxData.data || []);
                 const latestADX = dataArray[dataArray.length - 1] || dataArray[0]; // Get most recent
-                const adxValue = latestADX?.ADX || latestADX?.value || 0;
-                const adxNum = typeof adxValue === 'number' ? adxValue : parseFloat(adxValue) || 0;
+                const adxNum = safeNumber(latestADX?.ADX || latestADX?.value, 0);
                 
                 // ADX interpretation: <20 weak trend, 20-40 strong trend, >40 very strong trend
                 let adxColor = palette.mutedText;
@@ -847,28 +888,28 @@ export const CompanyDetailsScreen = ({ route }: Props) => {
                 <View style={styles.profileItem}>
                   <Briefcase size={14} color={palette.mutedText} style={{marginBottom: 4}} />
                   <Text style={styles.profileLabel}>Sector</Text>
-                  <Text style={styles.profileValue}>{overview.sector || 'N/A'}</Text>
+                  <Text style={styles.profileValue}>{safeString(overview.sector)}</Text>
                 </View>
                 <View style={styles.dividerVertical} />
                 <View style={styles.profileItem}>
                   <Globe size={14} color={palette.mutedText} style={{marginBottom: 4}} />
                   <Text style={styles.profileLabel}>Industry</Text>
-                  <Text style={styles.profileValue}>{overview.industry || 'N/A'}</Text>
+                  <Text style={styles.profileValue}>{safeString(overview.industry)}</Text>
                 </View>
-                {overview.employees && (
+                {overview.employees != null && safeNumber(overview.employees) > 0 && (
                   <>
                     <View style={styles.dividerVertical} />
                     <View style={styles.profileItem}>
                       <Users size={14} color={palette.mutedText} style={{marginBottom: 4}} />
                       <Text style={styles.profileLabel}>Employees</Text>
-                      <Text style={styles.profileValue}>{overview.employees.toLocaleString()}</Text>
+                      <Text style={styles.profileValue}>{safeNumber(overview.employees).toLocaleString()}</Text>
                     </View>
                   </>
                 )}
               </View>
               <View style={styles.descContainer}>
                 <Text style={styles.description}>
-                  {overview.description || 'No description available.'}
+                  {safeString(overview.description, 'No description available.')}
                 </Text>
               </View>
             </View>
@@ -925,6 +966,10 @@ const styles = StyleSheet.create({
     color: palette.mutedText,
     fontSize: 14,
     flex: 1,
+  },
+  favoriteButton: {
+    padding: 4,
+    marginLeft: 'auto',
   },
   heroSection: {
     flexDirection: 'row',

@@ -5,13 +5,36 @@ import { WebView } from 'react-native-webview';
 import { palette, layout } from '@/theme';
 import { tradingViewPriceService } from '@/services/tradingViewPriceService';
 
+type AllowedRange = '1D' | '1M' | '6M' | '1Y' | '5Y' | 'ALL';
+
 interface Props {
   symbol: string;
   height?: number;
+  range?: AllowedRange;
   onPriceUpdate?: (price: number, change: number, changePercent: number) => void;
 }
 
-export const TradingViewChart = ({ symbol, height = 400, onPriceUpdate }: Props) => {
+// Map app range to TradingView interval and range
+const getRangeConfig = (range: AllowedRange): { interval: string; range: string } => {
+  switch (range) {
+    case '1D':
+      return { interval: '5', range: '1D' };      // 5-minute candles, 1 day
+    case '1M':
+      return { interval: '60', range: '1M' };     // 1-hour candles, 1 month
+    case '6M':
+      return { interval: 'D', range: '6M' };      // Daily candles, 6 months
+    case '1Y':
+      return { interval: 'D', range: '12M' };     // Daily candles, 1 year
+    case '5Y':
+      return { interval: 'W', range: '60M' };     // Weekly candles, 5 years
+    case 'ALL':
+      return { interval: 'M', range: 'ALL' };     // Monthly candles, all time
+    default:
+      return { interval: 'D', range: '12M' };
+  }
+};
+
+export const TradingViewChart = ({ symbol, height = 400, range = '1Y', onPriceUpdate }: Props) => {
   const netInfo = useNetInfo();
   const webViewRef = useRef<WebView>(null);
 
@@ -57,6 +80,7 @@ export const TradingViewChart = ({ symbol, height = 400, onPriceUpdate }: Props)
   };
 
   const fullSymbol = getFullSymbol(symbol);
+  const rangeConfig = getRangeConfig(range);
 
   const htmlContent = useMemo(() => {
     return `
@@ -78,7 +102,8 @@ export const TradingViewChart = ({ symbol, height = 400, onPriceUpdate }: Props)
             const widget = new TradingView.widget({
               "autosize": true,
               "symbol": "${fullSymbol}",
-              "interval": "D",
+              "interval": "${rangeConfig.interval}",
+              "range": "${rangeConfig.range}",
               "timezone": "Etc/UTC",
               "theme": "dark",
               "style": "1",
@@ -179,7 +204,7 @@ export const TradingViewChart = ({ symbol, height = 400, onPriceUpdate }: Props)
         </body>
       </html>
     `;
-  }, [fullSymbol]);
+  }, [fullSymbol, range, rangeConfig.interval, rangeConfig.range]);
 
   // Offline State
   if (netInfo.isConnected === false) {

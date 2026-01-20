@@ -7,7 +7,8 @@ import {
   ActivityIndicator, 
   TouchableOpacity,
   Linking,
-  Image 
+  Image,
+  FlatList
 } from 'react-native';
 import { 
   Newspaper, 
@@ -19,16 +20,19 @@ import {
   DollarSign,
   Building2,
   TrendingDown,
-  Split
+  Split,
+  ChevronRight
 } from 'lucide-react-native';
 import { ScreenShell } from '@/components';
 import { palette, spacing, layout } from '@/theme';
 import { financeApiService } from '@/services/financeApiService';
 
 type ViewMode = 'NEWS' | 'CALENDAR';
+type CalendarCategory = 'EARNINGS' | 'DIVIDENDS' | 'ECONOMIC' | 'IPOS' | 'OFFERINGS' | 'SPLITS';
 
 export const StatisticsScreen = () => {
   const [viewMode, setViewMode] = useState<ViewMode>('NEWS');
+  const [calendarCategory, setCalendarCategory] = useState<CalendarCategory>('EARNINGS');
   const [loading, setLoading] = useState(true);
   const [newsLoading, setNewsLoading] = useState(false);
   const [calendarLoading, setCalendarLoading] = useState(false);
@@ -242,227 +246,270 @@ export const StatisticsScreen = () => {
   };
 
   const renderCalendarHub = () => {
+    const calendarCategories = [
+      { key: 'EARNINGS' as CalendarCategory, label: 'Earnings', icon: Calendar, color: palette.accent, count: earnings.length },
+      { key: 'DIVIDENDS' as CalendarCategory, label: 'Dividends', icon: DollarSign, color: palette.success, count: dividends.length },
+      { key: 'ECONOMIC' as CalendarCategory, label: 'Economic', icon: TrendingUp, color: palette.primary, count: economicEvents.length },
+      { key: 'IPOS' as CalendarCategory, label: 'IPOs', icon: Building2, color: palette.accent, count: (ipos.priced?.length || 0) + (ipos.upcoming?.length || 0) },
+      { key: 'OFFERINGS' as CalendarCategory, label: 'Offerings', icon: TrendingDown, color: palette.warning, count: publicOfferings.priced?.length || 0 },
+      { key: 'SPLITS' as CalendarCategory, label: 'Splits', icon: Split, color: palette.accent, count: stockSplits.length },
+    ];
+
+    const renderCategoryContent = () => {
+      if (calendarLoading) {
+        return <ActivityIndicator size="large" color={palette.accent} style={styles.loader} />;
+      }
+
+      switch (calendarCategory) {
+        case 'EARNINGS':
+          return earnings.length > 0 ? (
+            earnings.map((event, index) => (
+              <View key={index} style={styles.calendarCard}>
+                <View style={styles.calendarHeader}>
+                  <View style={styles.symbolBadge}>
+                    <Text style={styles.symbolText}>{event.symbol}</Text>
+                  </View>
+                  {event.time && (
+                    <Text style={styles.dateText}>{event.time}</Text>
+                  )}
+                </View>
+                {event.name && (
+                  <Text style={styles.companyName} numberOfLines={1}>{event.name}</Text>
+                )}
+                <View style={styles.dividendDetails}>
+                  {event.epsForecast && (
+                    <Text style={styles.detailText}>EPS Est: {event.epsForecast}</Text>
+                  )}
+                  {event.fiscalQuarterEnding && (
+                    <Text style={styles.detailText}>Q: {event.fiscalQuarterEnding}</Text>
+                  )}
+                </View>
+              </View>
+            ))
+          ) : (
+            <View style={styles.emptyState}>
+              <Calendar size={48} color={palette.mutedText} />
+              <Text style={styles.emptyText}>No earnings announcements</Text>
+            </View>
+          );
+
+        case 'DIVIDENDS':
+          return dividends.length > 0 ? (
+            dividends.map((div, index) => (
+              <View key={index} style={styles.calendarCard}>
+                <View style={styles.calendarHeader}>
+                  <View style={styles.symbolBadge}>
+                    <Text style={styles.symbolText}>{div.symbol}</Text>
+                  </View>
+                  <Text style={styles.priceText}>{formatPrice(div.dividend_Rate)}</Text>
+                </View>
+                {div.companyName && (
+                  <Text style={styles.companyName} numberOfLines={1}>{div.companyName}</Text>
+                )}
+                <View style={styles.dividendDetails}>
+                  <Text style={styles.detailText}>Ex: {div.dividend_Ex_Date}</Text>
+                  <Text style={styles.detailText}>Pay: {div.payment_Date}</Text>
+                </View>
+              </View>
+            ))
+          ) : (
+            <View style={styles.emptyState}>
+              <DollarSign size={48} color={palette.mutedText} />
+              <Text style={styles.emptyText}>No dividends today</Text>
+            </View>
+          );
+
+        case 'ECONOMIC':
+          return economicEvents.length > 0 ? (
+            economicEvents.map((event, index) => (
+              <View key={index} style={styles.calendarCard}>
+                <View style={styles.calendarHeader}>
+                  <Text style={styles.eventName}>{event.eventName}</Text>
+                  <Text style={styles.countryBadge}>{event.country}</Text>
+                </View>
+                <View style={styles.economicMetrics}>
+                  <View style={styles.metricItem}>
+                    <Text style={styles.metricLabel}>Actual</Text>
+                    <Text style={styles.metricValue}>{event.actual || 'N/A'}</Text>
+                  </View>
+                  <View style={styles.metricItem}>
+                    <Text style={styles.metricLabel}>Consensus</Text>
+                    <Text style={styles.metricValue}>{event.consensus || 'N/A'}</Text>
+                  </View>
+                  <View style={styles.metricItem}>
+                    <Text style={styles.metricLabel}>Previous</Text>
+                    <Text style={styles.metricValue}>{event.previous || 'N/A'}</Text>
+                  </View>
+                </View>
+              </View>
+            ))
+          ) : (
+            <View style={styles.emptyState}>
+              <TrendingUp size={48} color={palette.mutedText} />
+              <Text style={styles.emptyText}>No economic events</Text>
+            </View>
+          );
+
+        case 'IPOS':
+          const hasIPOs = (ipos.priced?.length > 0 || ipos.upcoming?.length > 0);
+          return hasIPOs ? (
+            <>
+              {ipos.upcoming?.length > 0 && (
+                <View style={styles.ipoSubSection}>
+                  <Text style={styles.ipoSubTitle}>Upcoming IPOs</Text>
+                  {ipos.upcoming.slice(0, 15).map((ipo: any, index: number) => (
+                    <View key={`upcoming-${index}`} style={styles.calendarCard}>
+                      <View style={styles.calendarHeader}>
+                        <View style={styles.symbolBadge}>
+                          <Text style={styles.symbolText}>{ipo.proposedTickerSymbol || 'N/A'}</Text>
+                        </View>
+                        <Text style={[styles.statusBadge, { color: palette.warning }]}>UPCOMING</Text>
+                      </View>
+                      {ipo.companyName && (
+                        <Text style={styles.companyName} numberOfLines={1}>{ipo.companyName}</Text>
+                      )}
+                      {ipo.proposedSharePrice && (
+                        <Text style={styles.priceText}>${ipo.proposedSharePrice}</Text>
+                      )}
+                      <View style={styles.ipoDetails}>
+                        {ipo.proposedExchange && (
+                          <Text style={styles.detailText}>{ipo.proposedExchange}</Text>
+                        )}
+                        {ipo.expectedPriceDate && (
+                          <Text style={styles.detailText}>Expected: {ipo.expectedPriceDate}</Text>
+                        )}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              )}
+              {ipos.priced?.length > 0 && (
+                <View style={styles.ipoSubSection}>
+                  <Text style={styles.ipoSubTitle}>Recently Priced</Text>
+                  {ipos.priced.slice(0, 15).map((ipo: any, index: number) => (
+                    <View key={`priced-${index}`} style={styles.calendarCard}>
+                      <View style={styles.calendarHeader}>
+                        <View style={styles.symbolBadge}>
+                          <Text style={styles.symbolText}>{ipo.proposedTickerSymbol || 'N/A'}</Text>
+                        </View>
+                        <Text style={styles.statusBadge}>PRICED</Text>
+                      </View>
+                      {ipo.companyName && (
+                        <Text style={styles.companyName} numberOfLines={1}>{ipo.companyName}</Text>
+                      )}
+                      {ipo.proposedSharePrice && (
+                        <Text style={styles.priceText}>${ipo.proposedSharePrice}</Text>
+                      )}
+                      <View style={styles.ipoDetails}>
+                        {ipo.proposedExchange && (
+                          <Text style={styles.detailText}>{ipo.proposedExchange}</Text>
+                        )}
+                        {ipo.sharesOffered && (
+                          <Text style={styles.detailText}>Shares: {ipo.sharesOffered}</Text>
+                        )}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              )}
+            </>
+          ) : (
+            <View style={styles.emptyState}>
+              <Building2 size={48} color={palette.mutedText} />
+              <Text style={styles.emptyText}>No IPO events</Text>
+            </View>
+          );
+
+        case 'OFFERINGS':
+          return publicOfferings.priced?.length > 0 ? (
+            publicOfferings.priced.slice(0, 15).map((offering: any, index: number) => (
+              <View key={index} style={styles.calendarCard}>
+                <View style={styles.calendarHeader}>
+                  <View style={styles.symbolBadge}>
+                    <Text style={styles.symbolText}>{offering.proposedTickerSymbol}</Text>
+                  </View>
+                  <Text style={styles.statusBadge}>PRICED</Text>
+                </View>
+                <Text style={styles.companyName} numberOfLines={1}>{offering.companyName}</Text>
+                <Text style={styles.detailText}>Value: {offering.dollarValueOfSharesOffered}</Text>
+              </View>
+            ))
+          ) : (
+            <View style={styles.emptyState}>
+              <TrendingDown size={48} color={palette.mutedText} />
+              <Text style={styles.emptyText}>No secondary offerings</Text>
+            </View>
+          );
+
+        case 'SPLITS':
+          return stockSplits.length > 0 ? (
+            stockSplits.map((split, index) => (
+              <View key={index} style={styles.calendarCard}>
+                <View style={styles.calendarHeader}>
+                  <View style={styles.symbolBadge}>
+                    <Text style={styles.symbolText}>{split.ticker}</Text>
+                  </View>
+                  <Text style={styles.splitRatio}>
+                    {split.old_share_worth}:{split.share_worth}
+                  </Text>
+                </View>
+                <Text style={styles.companyName}>{split.companyshortname}</Text>
+                {split.startdatetime && (
+                  <Text style={styles.detailText}>Date: {formatDate(split.startdatetime)}</Text>
+                )}
+              </View>
+            ))
+          ) : (
+            <View style={styles.emptyState}>
+              <Split size={48} color={palette.mutedText} />
+              <Text style={styles.emptyText}>No stock splits</Text>
+            </View>
+          );
+
+        default:
+          return null;
+      }
+    };
+
     return (
       <>
-        {calendarLoading ? (
-          <ActivityIndicator size="large" color={palette.accent} style={styles.loader} />
-        ) : (
-          <>
-            {/* Earnings Calendar */}
-            {earnings.length > 0 && (
-              <View style={styles.calendarSection}>
-                <View style={styles.sectionTitleRow}>
-                  <Calendar size={18} color={palette.accent} />
-                  <Text style={styles.sectionTitle}>Earnings Announcements</Text>
-                </View>
-                {earnings.map((event, index) => (
-                  <View key={index} style={styles.calendarCard}>
-                    <View style={styles.calendarHeader}>
-                      <View style={styles.symbolBadge}>
-                        <Text style={styles.symbolText}>{event.symbol}</Text>
-                      </View>
-                      {event.time && (
-                        <Text style={styles.dateText}>{event.time}</Text>
-                      )}
-                    </View>
-                    {event.name && (
-                      <Text style={styles.companyName} numberOfLines={1}>{event.name}</Text>
-                    )}
-                    <View style={styles.dividendDetails}>
-                      {event.epsForecast && (
-                        <Text style={styles.detailText}>EPS Est: {event.epsForecast}</Text>
-                      )}
-                      {event.fiscalQuarterEnding && (
-                        <Text style={styles.detailText}>Q: {event.fiscalQuarterEnding}</Text>
-                      )}
-                    </View>
+        {/* Category Tabs */}
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.categoryTabsContainer}
+          style={styles.categoryTabsScroll}
+        >
+          {calendarCategories.map((cat) => {
+            const Icon = cat.icon;
+            const isActive = calendarCategory === cat.key;
+            return (
+              <TouchableOpacity
+                key={cat.key}
+                style={[styles.categoryTab, isActive && styles.categoryTabActive]}
+                onPress={() => setCalendarCategory(cat.key)}
+                activeOpacity={0.7}
+              >
+                <Icon size={16} color={isActive ? palette.background : cat.color} />
+                <Text style={[styles.categoryTabText, isActive && styles.categoryTabTextActive]}>
+                  {cat.label}
+                </Text>
+                {cat.count > 0 && (
+                  <View style={[styles.categoryBadge, isActive && styles.categoryBadgeActive]}>
+                    <Text style={[styles.categoryBadgeText, isActive && styles.categoryBadgeTextActive]}>
+                      {cat.count > 99 ? '99+' : cat.count}
+                    </Text>
                   </View>
-                ))}
-              </View>
-            )}
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
 
-            {/* Dividends */}
-            {dividends.length > 0 && (
-              <View style={styles.calendarSection}>
-                <View style={styles.sectionTitleRow}>
-                  <DollarSign size={18} color={palette.success} />
-                  <Text style={styles.sectionTitle}>Dividends Today</Text>
-                </View>
-                {dividends.map((div, index) => (
-                  <View key={index} style={styles.calendarCard}>
-                    <View style={styles.calendarHeader}>
-                      <View style={styles.symbolBadge}>
-                        <Text style={styles.symbolText}>{div.symbol}</Text>
-                      </View>
-                      <Text style={styles.priceText}>{formatPrice(div.dividend_Rate)}</Text>
-                    </View>
-                    {div.companyName && (
-                      <Text style={styles.companyName} numberOfLines={1}>{div.companyName}</Text>
-                    )}
-                    <View style={styles.dividendDetails}>
-                      <Text style={styles.detailText}>Ex: {div.dividend_Ex_Date}</Text>
-                      <Text style={styles.detailText}>Pay: {div.payment_Date}</Text>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* Economic Events */}
-            {economicEvents.length > 0 && (
-              <View style={styles.calendarSection}>
-                <View style={styles.sectionTitleRow}>
-                  <TrendingUp size={18} color={palette.primary} />
-                  <Text style={styles.sectionTitle}>Economic Events</Text>
-                </View>
-                {economicEvents.map((event, index) => (
-                  <View key={index} style={styles.calendarCard}>
-                    <View style={styles.calendarHeader}>
-                      <Text style={styles.eventName}>{event.eventName}</Text>
-                      <Text style={styles.countryBadge}>{event.country}</Text>
-                    </View>
-                    <View style={styles.economicMetrics}>
-                      <View style={styles.metricItem}>
-                        <Text style={styles.metricLabel}>Actual</Text>
-                        <Text style={styles.metricValue}>{event.actual || 'N/A'}</Text>
-                      </View>
-                      <View style={styles.metricItem}>
-                        <Text style={styles.metricLabel}>Consensus</Text>
-                        <Text style={styles.metricValue}>{event.consensus || 'N/A'}</Text>
-                      </View>
-                      <View style={styles.metricItem}>
-                        <Text style={styles.metricLabel}>Previous</Text>
-                        <Text style={styles.metricValue}>{event.previous || 'N/A'}</Text>
-                      </View>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* IPOs */}
-            {(ipos.priced?.length > 0 || ipos.upcoming?.length > 0) && (
-              <View style={styles.calendarSection}>
-                <View style={styles.sectionTitleRow}>
-                  <Building2 size={18} color={palette.accent} />
-                  <Text style={styles.sectionTitle}>Recent IPOs</Text>
-                </View>
-                {/* Priced IPOs */}
-                {ipos.priced?.slice(0, 10).map((ipo: any, index: number) => (
-                  <View key={`priced-${index}`} style={styles.calendarCard}>
-                    <View style={styles.calendarHeader}>
-                      <View style={styles.symbolBadge}>
-                        <Text style={styles.symbolText}>{ipo.proposedTickerSymbol || 'N/A'}</Text>
-                      </View>
-                      <Text style={styles.statusBadge}>PRICED</Text>
-                    </View>
-                    {ipo.companyName && (
-                      <Text style={styles.companyName} numberOfLines={1}>{ipo.companyName}</Text>
-                    )}
-                    {ipo.proposedSharePrice && (
-                      <Text style={styles.priceText}>${ipo.proposedSharePrice}</Text>
-                    )}
-                    <View style={styles.ipoDetails}>
-                      {ipo.proposedExchange && (
-                        <Text style={styles.detailText}>{ipo.proposedExchange}</Text>
-                      )}
-                      {ipo.sharesOffered && (
-                        <Text style={styles.detailText}>Shares: {ipo.sharesOffered}</Text>
-                      )}
-                    </View>
-                    {ipo.pricedDate && (
-                      <Text style={styles.detailText}>Priced: {ipo.pricedDate}</Text>
-                    )}
-                  </View>
-                ))}
-                {/* Upcoming IPOs */}
-                {ipos.upcoming?.slice(0, 10).map((ipo: any, index: number) => (
-                  <View key={`upcoming-${index}`} style={styles.calendarCard}>
-                    <View style={styles.calendarHeader}>
-                      <View style={styles.symbolBadge}>
-                        <Text style={styles.symbolText}>{ipo.proposedTickerSymbol || 'N/A'}</Text>
-                      </View>
-                      <Text style={[styles.statusBadge, { color: palette.warning }]}>UPCOMING</Text>
-                    </View>
-                    {ipo.companyName && (
-                      <Text style={styles.companyName} numberOfLines={1}>{ipo.companyName}</Text>
-                    )}
-                    {ipo.proposedSharePrice && (
-                      <Text style={styles.priceText}>${ipo.proposedSharePrice}</Text>
-                    )}
-                    <View style={styles.ipoDetails}>
-                      {ipo.proposedExchange && (
-                        <Text style={styles.detailText}>{ipo.proposedExchange}</Text>
-                      )}
-                      {ipo.sharesOffered && (
-                        <Text style={styles.detailText}>Shares: {ipo.sharesOffered}</Text>
-                      )}
-                    </View>
-                    {ipo.expectedPriceDate && (
-                      <Text style={styles.detailText}>Expected: {ipo.expectedPriceDate}</Text>
-                    )}
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* Public Offerings */}
-            {publicOfferings.priced?.length > 0 && (
-              <View style={styles.calendarSection}>
-                <View style={styles.sectionTitleRow}>
-                  <TrendingDown size={18} color={palette.warning} />
-                  <Text style={styles.sectionTitle}>Secondary Offerings</Text>
-                </View>
-                {publicOfferings.priced.slice(0, 10).map((offering: any, index: number) => (
-                  <View key={index} style={styles.calendarCard}>
-                    <View style={styles.calendarHeader}>
-                      <View style={styles.symbolBadge}>
-                        <Text style={styles.symbolText}>{offering.proposedTickerSymbol}</Text>
-                      </View>
-                      <Text style={styles.statusBadge}>Priced</Text>
-                    </View>
-                    <Text style={styles.companyName} numberOfLines={1}>{offering.companyName}</Text>
-                    <Text style={styles.detailText}>Value: {offering.dollarValueOfSharesOffered}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* Stock Splits */}
-            {stockSplits.length > 0 && (
-              <View style={styles.calendarSection}>
-                <View style={styles.sectionTitleRow}>
-                  <Split size={18} color={palette.accent} />
-                  <Text style={styles.sectionTitle}>Stock Splits</Text>
-                </View>
-                {stockSplits.map((split, index) => (
-                  <View key={index} style={styles.calendarCard}>
-                    <View style={styles.calendarHeader}>
-                      <View style={styles.symbolBadge}>
-                        <Text style={styles.symbolText}>{split.ticker}</Text>
-                      </View>
-                      <Text style={styles.splitRatio}>
-                        {split.old_share_worth}:{split.share_worth}
-                      </Text>
-                    </View>
-                    <Text style={styles.companyName}>{split.companyshortname}</Text>
-                    {split.startdatetime && (
-                      <Text style={styles.detailText}>Date: {formatDate(split.startdatetime)}</Text>
-                    )}
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {earnings.length === 0 && dividends.length === 0 && economicEvents.length === 0 && 
-             ipos.priced?.length === 0 && publicOfferings.priced?.length === 0 && stockSplits.length === 0 && (
-              <View style={styles.emptyState}>
-                <Calendar size={48} color={palette.mutedText} />
-                <Text style={styles.emptyText}>No calendar events available</Text>
-              </View>
-            )}
-          </>
-        )}
+        {/* Category Content */}
+        <View style={styles.categoryContent}>
+          {renderCategoryContent()}
+        </View>
       </>
     );
   };
@@ -832,5 +879,70 @@ const styles = StyleSheet.create({
     color: palette.accent,
     fontSize: 14,
     fontWeight: '700',
+  },
+
+  // Category Tabs
+  categoryTabsScroll: {
+    marginBottom: spacing.lg,
+    marginHorizontal: -spacing.lg,
+  },
+  categoryTabsContainer: {
+    paddingHorizontal: spacing.lg,
+    gap: spacing.sm,
+  },
+  categoryTab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: layout.borderRadius,
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
+    gap: spacing.xs,
+  },
+  categoryTabActive: {
+    backgroundColor: palette.accent,
+    borderColor: palette.accent,
+  },
+  categoryTabText: {
+    color: palette.text,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  categoryTabTextActive: {
+    color: palette.background,
+  },
+  categoryBadge: {
+    backgroundColor: palette.surfaceHighlight,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginLeft: 2,
+  },
+  categoryBadgeActive: {
+    backgroundColor: 'rgba(0,0,0,0.2)',
+  },
+  categoryBadgeText: {
+    color: palette.mutedText,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  categoryBadgeTextActive: {
+    color: palette.background,
+  },
+  categoryContent: {
+    flex: 1,
+  },
+  ipoSubSection: {
+    marginBottom: spacing.lg,
+  },
+  ipoSubTitle: {
+    color: palette.mutedText,
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: spacing.sm,
   },
 });

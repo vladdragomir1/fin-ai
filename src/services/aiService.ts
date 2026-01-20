@@ -3,6 +3,23 @@ import { databaseService } from './databaseService';
 import { LlamaContext, initLlama } from 'llama.rn';
 import RNFS from 'react-native-fs';
 
+// --- Progress Callback Types ---
+export type ThinkingStage = 
+  | 'analyzing'
+  | 'searching'
+  | 'fetching'
+  | 'building'
+  | 'generating'
+  | 'complete';
+
+export interface ThinkingProgress {
+  stage: ThinkingStage;
+  message: string;
+  detail?: string;
+}
+
+export type ProgressCallback = (progress: ThinkingProgress) => void;
+
 // --- Chat History Configuration ---
 const MAX_HISTORY_MESSAGES = 20;     // Keep last 20 messages for context
 const MAX_HISTORY_TOKENS = 3000;     // Approx token limit for history (leaves room for RAG + response)
@@ -15,6 +32,21 @@ export const AiService = {
   context: null as LlamaContext | null,
   isInitialized: false,
   isProcessing: false, // Lock to prevent concurrent requests (Context busy error)
+  abortRequested: false, // Flag to signal abort request
+
+  /**
+   * Request to abort the current generation
+   */
+  requestAbort() {
+    if (this.isProcessing) {
+      console.log('[AI] Abort requested by user');
+      this.abortRequested = true;
+      // Stop the llama context if it supports it
+      if (this.context?.stopCompletion) {
+        this.context.stopCompletion();
+      }
+    }
+  },
 
   /**
    * Initialize the LFM2-1.2B-RAG Engine
@@ -55,10 +87,22 @@ export const AiService = {
    * Main function: Generate response using RAG + Local LLM
    * @param userPrompt - Current user message
    * @param chatHistory - Previous messages for conversation context (optional)
+   * @param onProgress - Callback for live progress updates (optional)
    */
-  async generateResponse(userPrompt: string, chatHistory?: Array<{text: string, sender: 'user' | 'ai'}>): Promise<string> {
+  async generateResponse(
+    userPrompt: string, 
+    chatHistory?: Array<{text: string, sender: 'user' | 'ai'}>,
+    onProgress?: ProgressCallback
+  ): Promise<string> {
     try {
       console.log(`[AI] Received query: "${userPrompt}"`);
+      
+      // Helper to safely report progress
+      const reportProgress = (stage: ThinkingStage, message: string, detail?: string) => {
+        if (onProgress) {
+          onProgress({ stage, message, detail });
+        }
+      };
       
       // Check if already processing (prevents "Context is busy" error)
       if (this.isProcessing) {
@@ -67,11 +111,14 @@ export const AiService = {
       }
       
       this.isProcessing = true; // Lock
+      this.abortRequested = false; // Reset abort flag
+      reportProgress('analyzing', 'Analyzing your question...');
       
       // 1. Ensure DB and AI are ready
       await databaseService.initialize();
       
       if (!this.isInitialized) {
+        reportProgress('analyzing', 'Loading AI model...');
         const success = await this.init();
         if (!success) return "Brain Missing: Please ask the developer to push the .gguf file via ADB.";
       }
@@ -106,9 +153,19 @@ export const AiService = {
         }
       }
       
-      const fullPrompt = await ragService.formatPromptForLLM(userPrompt, historyContext);
+      // Pass progress callback to RAG service for detailed progress updates
+      const fullPrompt = await ragService.formatPromptForLLM(userPrompt, historyContext, onProgress);
+      
+      // Check if abort was requested during RAG processing
+      if (this.abortRequested) {
+        console.log('[AI] Abort detected before inference');
+        this.isProcessing = false;
+        this.abortRequested = false;
+        return '';
+      }
       
       console.log(`[AI] Starting LFM2 inference...`);
+      reportProgress('generating', 'Generating response...', 'This may take a moment');
       const startTime = Date.now();
       
       // 3. Generate Answer using LFM2-1.2B-RAG
@@ -131,15 +188,27 @@ export const AiService = {
         stop: ['<|im_end|>', '<|endoftext|>'], 
       });
 
+      // Check if abort was requested during generation
+      if (this.abortRequested) {
+        console.log('[AI] Abort detected after inference');
+        this.isProcessing = false;
+        this.abortRequested = false;
+        return '';
+      }
+
       const duration = Date.now() - startTime;
       console.log(`[AI] Response generated in ${duration}ms`);
       console.log(`[AI] Response preview: ${result.text.substring(0, 100)}...`);
+      
+      reportProgress('complete', 'Done!', `Generated in ${(duration / 1000).toFixed(1)}s`);
 
       this.isProcessing = false; // Unlock
+      this.abortRequested = false; // Reset
       return result.text.trim();
 
     } catch (error) {
       this.isProcessing = false; // Unlock on error
+      this.abortRequested = false; // Reset
       console.error('[AI] Error generating response:', error);
       return `I encountered an error accessing the financial database or the AI model.\n\nError: ${error}`;
     }

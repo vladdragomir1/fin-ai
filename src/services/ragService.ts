@@ -1,5 +1,6 @@
 import { databaseService } from './databaseService';
 import { financeApiService } from './financeApiService';
+import type { ProgressCallback } from './aiService';
 
 /**
  * RAG (Retrieval Augmented Generation) Service
@@ -106,9 +107,13 @@ class RAGService {
    * Helper: Trigger a fresh data fetch from API before analyzing.
    * This updates the SQLite cache so the AI has the latest numbers.
    */
-  private async refreshCompanyData(symbol: string): Promise<void> {
+  private async refreshCompanyData(
+    symbol: string, 
+    onProgress?: (message: string, detail?: string) => void
+  ): Promise<void> {
     try {
       console.log(`RAG: Checking for fresh data for ${symbol}...`);
+      onProgress?.('Fetching stock quote...', symbol);
       
       // Phase 1: Core financial data (most important)
       const coreResults = await Promise.allSettled([
@@ -122,6 +127,8 @@ class RAGService {
       if (coreSuccessCount > 0) {
         console.log(`RAG: ✅ Refreshed ${coreSuccessCount}/3 core endpoints for ${symbol}`);
       }
+      
+      onProgress?.('Loading financial modules...', `Earnings, recommendations, filings`);
       
       // Phase 2: Extended modules (same as CompanyDetailsScreen)
       // These are fetched in background to populate the cache for comprehensive AI context
@@ -144,6 +151,7 @@ class RAGService {
       
       const extendedSuccessCount = extendedResults.filter(r => r.status === 'fulfilled').length;
       console.log(`RAG: ✅ Refreshed ${extendedSuccessCount}/14 extended modules for ${symbol}`);
+      onProgress?.('Analyzing financial data...', `Loaded ${extendedSuccessCount} modules`);
       
     } catch (error) {
       // If offline, we just log a warning and proceed with existing DB data
@@ -155,12 +163,17 @@ class RAGService {
    * Build context for LLM about a specific company
    * STRATEGY: Provide clean, labeled data to reduce confusion.
    */
-  async buildCompanyContext(symbol: string): Promise<string> {
+  async buildCompanyContext(
+    symbol: string,
+    onProgress?: (message: string, detail?: string) => void
+  ): Promise<string> {
     console.log(`[RAG] Building context for ${symbol}`);
     
     // 1. TRIGGER REFRESH (API -> SQLite)
-    await this.refreshCompanyData(symbol);
+    await this.refreshCompanyData(symbol, onProgress);
 
+    onProgress?.('Reading from database...', symbol);
+    
     // 2. READ from SQLite (Now contains fresh data)
     const data = await databaseService.getCompanyDataForRAG(symbol);
     
@@ -678,10 +691,15 @@ class RAGService {
   /**
    * Build context for comparing multiple companies
    */
-  async buildComparisonContext(symbols: string[]): Promise<string> {
+  async buildComparisonContext(
+    symbols: string[],
+    onProgress?: (message: string, detail?: string) => void
+  ): Promise<string> {
     // 1. Refresh all companies in parallel
-    await Promise.allSettled(symbols.map(s => this.refreshCompanyData(s)));
+    onProgress?.('Fetching data for comparison...', symbols.join(', '));
+    await Promise.allSettled(symbols.map(s => this.refreshCompanyData(s, onProgress)));
 
+    onProgress?.('Building comparison...', `Analyzing ${symbols.length} companies`);
     let context = `### Comparison of ${symbols.join(', ')}\n\n`;
 
     for (const symbol of symbols) {
@@ -1028,7 +1046,23 @@ class RAGService {
    * IMPROVED: Support for multi-company comparison queries
    * IMPROVED: Check chat history for company context (follow-up questions)
    */
-  async extractRelevantContext(query: string, chatHistory: string = ''): Promise<string> {
+  async extractRelevantContext(
+    query: string, 
+    chatHistory: string = '',
+    onProgress?: ProgressCallback
+  ): Promise<string> {
+    // Helper to safely report progress to UI
+    const reportProgress = (message: string, detail?: string) => {
+      if (onProgress) {
+        onProgress({ stage: 'fetching', message, detail });
+      }
+    };
+    
+    // Helper for buildCompanyContext - passes progress updates through
+    const buildContextProgress = (message: string, detail?: string) => {
+      reportProgress(message, detail);
+    };
+    
     const cleanQuery = query.trim();
     const queryLower = cleanQuery.toLowerCase();
     const allSymbols = await databaseService.getAllCachedSymbols();
@@ -1144,7 +1178,8 @@ class RAGService {
       for (const [companyName, symbol] of Object.entries(historyCompanyMap)) {
         if (isStandaloneWord(historyLower, companyName) && allSymbols.includes(symbol)) {
           console.log(`[RAG] Found company "${companyName}" (${symbol}) in chat history - using for context`);
-          return await this.buildCompanyContext(symbol);
+          reportProgress('Found ' + companyName + ' in conversation', symbol);
+          return await this.buildCompanyContext(symbol, buildContextProgress);
         }
       }
       
@@ -1157,7 +1192,8 @@ class RAGService {
         
         if (isStandaloneWord(historyLower, sym)) {
           console.log(`[RAG] Found symbol ${sym} in chat history - using for context`);
-          return await this.buildCompanyContext(sym);
+          reportProgress('Found ' + sym + ' in conversation');
+          return await this.buildCompanyContext(sym, buildContextProgress);
         }
       }
       
@@ -1172,7 +1208,8 @@ class RAGService {
             if (isStandaloneWord(historyLower, nameLower) || 
                 nameLower.split(/[\s,]+/).some(word => word.length >= 5 && isStandaloneWord(historyLower, word))) {
               console.log(`[RAG] Found company "${overview.name}" (${sym}) in chat history via DB lookup`);
-              return await this.buildCompanyContext(sym);
+              reportProgress('Found ' + overview.name + ' in conversation', sym);
+              return await this.buildCompanyContext(sym, buildContextProgress);
             }
           }
         }
@@ -1236,6 +1273,53 @@ class RAGService {
       'mastercard': 'MA',
       'american express': 'AXP',
       'amex': 'AXP',
+      // Canadian Banks
+      'royal bank': 'RY',
+      'royal bank of canada': 'RY',
+      'rbc': 'RY',
+      'td bank': 'TD',
+      'toronto-dominion': 'TD',
+      'toronto dominion': 'TD',
+      'bank of montreal': 'BMO',
+      'bmo': 'BMO',
+      'scotiabank': 'BNS',
+      'bank of nova scotia': 'BNS',
+      'cibc': 'CM',
+      'canadian imperial': 'CM',
+      // More US banks
+      'bank of america': 'BAC',
+      'bofa': 'BAC',
+      'wells fargo': 'WFC',
+      'citigroup': 'C',
+      'citi': 'C',
+      'morgan stanley': 'MS',
+      // Healthcare
+      'johnson & johnson': 'JNJ',
+      'johnson and johnson': 'JNJ',
+      'pfizer': 'PFE',
+      'moderna': 'MRNA',
+      'unitedhealth': 'UNH',
+      'eli lilly': 'LLY',
+      'lilly': 'LLY',
+      'abbvie': 'ABBV',
+      'merck': 'MRK',
+      // Other major companies
+      'home depot': 'HD',
+      'lowes': 'LOW',
+      "lowe's": 'LOW',
+      'procter': 'PG',
+      'procter & gamble': 'PG',
+      'johnson controls': 'JCI',
+      'caterpillar': 'CAT',
+      'deere': 'DE',
+      'john deere': 'DE',
+      '3m': 'MMM',
+      'honeywell': 'HON',
+      'lockheed': 'LMT',
+      'lockheed martin': 'LMT',
+      'raytheon': 'RTX',
+      'general electric': 'GE',
+      'ge': 'GE',
     };
 
     // =========================================================================
@@ -1268,12 +1352,13 @@ class RAGService {
     if (mentionedSymbols.size >= 2) {
       const symbolsArray = Array.from(mentionedSymbols);
       console.log(`[RAG] Multi-company query detected: ${symbolsArray.join(', ')}`);
+      reportProgress('Comparing ' + symbolsArray.join(' vs ') + '...');
       
       // Build combined context for comparison (limit to 3 companies max for context size)
       const contexts: string[] = [];
       for (const sym of symbolsArray.slice(0, 3)) {
         console.log(`[RAG] Building context for comparison: ${sym}`);
-        const context = await this.buildCompanyContext(sym);
+        const context = await this.buildCompanyContext(sym, buildContextProgress);
         contexts.push(context);
       }
       
@@ -1286,21 +1371,50 @@ class RAGService {
     if (mentionedSymbols.size === 1) {
       const symbol = Array.from(mentionedSymbols)[0];
       console.log(`[RAG] Found single company match: ${symbol}`);
-      return await this.buildCompanyContext(symbol);
+      reportProgress('Looking up ' + symbol + '...');
+      return await this.buildCompanyContext(symbol, buildContextProgress);
     }
     
     // No companies found from common names - continue with fallback methods
     
     // 3. Check company overview (includes full name) for other companies
+    // IMPROVED: First check full company names, then partial word matches
     for (const sym of allSymbols) {
       const overview = await databaseService.getCompanyOverview(sym);
       if (overview && overview.name) {
+        const nameLower = overview.name.toLowerCase();
+        
+        // First: Check if full company name is in query (e.g., "Royal Bank of Canada")
+        if (queryLower.includes(nameLower)) {
+          console.log(`[RAG] Found EXACT company name match: ${overview.name} (${sym})`);
+          reportProgress('Found ' + overview.name, sym);
+          return await this.buildCompanyContext(sym, buildContextProgress);
+        }
+        
+        // Second: Check if query is in company name (e.g., "Royal Bank" matches "Royal Bank of Canada")
+        // Remove common suffixes for better matching
+        const queryClean = queryLower
+          .replace(/\b(inc\.?|corp\.?|corporation|company|ltd\.?|limited|plc)\b/gi, '')
+          .trim();
+        const nameClean = nameLower
+          .replace(/\b(inc\.?|corp\.?|corporation|company|ltd\.?|limited|plc|common stock)\b/gi, '')
+          .trim();
+        
+        // Check if significant parts of query match company name
+        if (queryClean.length >= 6 && nameClean.includes(queryClean)) {
+          console.log(`[RAG] Found partial company name match: ${overview.name} (${sym})`);
+          reportProgress('Found ' + overview.name, sym);
+          return await this.buildCompanyContext(sym, buildContextProgress);
+        }
+        
+        // Third: Check individual significant words (original logic)
         const companyWords = overview.name.toLowerCase().split(/[\s,]+/);
         for (const companyWord of companyWords) {
           // Match significant words (4+ chars to avoid false positives)
           if (companyWord.length >= 4 && queryLower.includes(companyWord)) {
-            console.log(`[RAG] Found company name match: ${overview.name} (${sym})`);
-            return await this.buildCompanyContext(sym);
+            console.log(`[RAG] Found company word match: ${overview.name} (${sym})`);
+            reportProgress('Found ' + overview.name, sym);
+            return await this.buildCompanyContext(sym, buildContextProgress);
           }
         }
       }
@@ -1341,6 +1455,7 @@ class RAGService {
     const moversKeywords = ['gainer', 'loser', 'active', 'mover', 'winner', 'performer'];
     if (moversKeywords.some(k => queryLower.includes(k))) {
       console.log(`[RAG] Detected market movers query`);
+      reportProgress('Loading market movers...');
       const moversData = await this.getMarketMoversData();
       if (moversData) {
         return `### Market Movers\n\n${moversData}\n\nThe user asked: "${cleanQuery}"`;
@@ -1358,13 +1473,15 @@ class RAGService {
     });
     if (foundSymbols.length >= 2) {
       console.log(`[RAG] Found comparison request: ${foundSymbols.join(', ')}`);
-      return await this.buildComparisonContext(foundSymbols);
+      reportProgress('Comparing ' + foundSymbols.join(' vs ') + '...');
+      return await this.buildComparisonContext(foundSymbols, buildContextProgress);
     }
 
     // 9. Watchlist queries - special handling
     const watchlistKeywords = ['watchlist', 'portfolio', 'my stocks', 'my companies'];
     if (watchlistKeywords.some(k => queryLower.includes(k))) {
       console.log(`[RAG] Detected watchlist query`);
+      reportProgress('Loading your watchlist...');
       return await this.buildMarketContext();
     }
 
@@ -1372,6 +1489,7 @@ class RAGService {
     const browseKeywords = ['browse', 'list', 'companies', 'stocks screen', 'what companies', 'which companies', 'company names', 'stock names', 'all stocks', 'available stocks', 'see the names', 'their names'];
     if (browseKeywords.some(k => queryLower.includes(k))) {
       console.log(`[RAG] Detected browse stocks / company list query`);
+      reportProgress('Loading company list...');
       return await this.buildCachedCompaniesContext();
     }
 
@@ -1379,12 +1497,14 @@ class RAGService {
     const marketKeywords = ['market', 'overview', 'sector', 'industry', 'trends', 'summary'];
     if (marketKeywords.some(k => queryLower.includes(k))) {
       console.log(`[RAG] Building comprehensive market overview context`);
+      reportProgress('Building market overview...');
       return await this.buildMarketContext();
     }
 
     // 12. General questions with available data
     if (allSymbols.length > 0) {
       console.log(`[RAG] No specific match, showing available companies`);
+      reportProgress('Searching knowledge base...');
       // Include company names list for better context
       const companiesList = await this.buildCachedCompaniesContext();
       return `${companiesList}\n\nThe user asked: "${cleanQuery}"`;
@@ -1400,10 +1520,26 @@ class RAGService {
    * Uses ChatML format optimized for document-based question answering
    * @param userQuery - Current user question
    * @param chatHistory - Formatted conversation history (optional)
+   * @param onProgress - Callback for live progress updates (optional)
    */
-  async formatPromptForLLM(userQuery: string, chatHistory: string = ''): Promise<string> {
+  async formatPromptForLLM(
+    userQuery: string, 
+    chatHistory: string = '',
+    onProgress?: ProgressCallback
+  ): Promise<string> {
+    // Helper to safely report progress
+    const reportProgress = (stage: 'searching' | 'fetching' | 'building', message: string, detail?: string) => {
+      if (onProgress) {
+        onProgress({ stage, message, detail });
+      }
+    };
+    
+    reportProgress('searching', 'Searching knowledge base...');
+    
     // Pass chat history to context extraction for follow-up questions
-    const context = await this.extractRelevantContext(userQuery, chatHistory);
+    const context = await this.extractRelevantContext(userQuery, chatHistory, onProgress);
+    
+    reportProgress('building', 'Preparing analysis...');
     
     const date = new Date().toISOString().split('T')[0];
 

@@ -309,9 +309,20 @@ class DatabaseService {
       await this.db.execute('BEGIN');
       await this.db.execute(`DELETE FROM historical_data WHERE symbol = ? AND range = ?`, [symbol, range]);
 
+      // Deduplicate data by date to avoid UNIQUE constraint violations
+      const uniqueData = new Map<string, ChartDataPoint>();
       for (const point of data) {
+        // For intraday (1D), use timestamp as key; for others use date
+        const key = range === '1D' ? `${point.date}_${point.timestamp}` : point.date;
+        // Keep the latest entry for each key
+        if (!uniqueData.has(key) || point.timestamp > (uniqueData.get(key)?.timestamp || 0)) {
+          uniqueData.set(key, point);
+        }
+      }
+
+      for (const point of uniqueData.values()) {
         await this.db.execute(
-          `INSERT INTO historical_data (symbol, date, price, timestamp, range, cached_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO historical_data (symbol, date, price, timestamp, range, cached_at) VALUES (?, ?, ?, ?, ?, ?)`,
           [symbol, point.date, point.price, point.timestamp, range, now]
         );
       }

@@ -123,7 +123,7 @@ export const AppNavigator = () => (
         component={CompanyDetailsScreen}
         options={{
           presentation: 'card',
-          title: 'Asset Details',
+          title: 'Details',
         }}
       />
       

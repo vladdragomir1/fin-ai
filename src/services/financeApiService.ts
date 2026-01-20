@@ -70,11 +70,15 @@ class FinanceApiService {
   }
 
   // --- HELPER: Clean strings like "$157.30" -> 157.30 ---
-  private parsePrice(value: string | number): number {
-    if (typeof value === 'number') return value;
+  private parsePrice(value: string | number | undefined | null): number {
+    if (value === undefined || value === null) return 0;
+    if (typeof value === 'number') return isNaN(value) ? 0 : value;
+    if (typeof value === 'object') return 0; // Handle case where object is passed
+    if (typeof value !== 'string') return 0;
     if (!value) return 0;
     // Remove '$' and ',' 
-    return parseFloat(value.replace(/[$,]/g, ''));
+    const parsed = parseFloat(value.replace(/[$,]/g, ''));
+    return isNaN(parsed) ? 0 : parsed;
   }
 
   // --- HELPER: Clean percents like "+1.24%" or "1.24%" -> 1.24 ---
@@ -727,9 +731,19 @@ class FinanceApiService {
           
           const date = new Date(timestamp).toISOString().split('T')[0]; // Format as YYYY-MM-DD
           
+          // Safely extract price - ensure val is an object before accessing properties
+          let priceValue: number | string | undefined = undefined;
+          if (val && typeof val === 'object') {
+            priceValue = val.close ?? val.adjclose ?? val.adjClose ?? val['4. close'];
+          } else if (typeof val === 'number') {
+            priceValue = val;
+          } else if (typeof val === 'string') {
+            priceValue = val;
+          }
+          
           return {
             date: date,
-            price: this.parsePrice(val.close || val.adjclose || val.adjClose || val['4. close'] || val),
+            price: this.parsePrice(priceValue),
             timestamp: timestamp,
           };
         }).filter(item => item.price > 0 && !isNaN(item.timestamp)); // Filter invalid entries

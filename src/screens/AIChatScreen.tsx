@@ -9,16 +9,17 @@ import {
   KeyboardAvoidingView, 
   Platform, 
   Text, 
-  Modal
+  Modal,
+  Animated
 } from 'react-native';
-import { Bot, Sparkles, Send, Menu, Plus, MessageSquare, X, Trash2 } from 'lucide-react-native';
+import { Bot, Sparkles, Send, Menu, Plus, MessageSquare, X, Trash2, Square } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Markdown from 'react-native-markdown-display'; 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { ScreenShell } from '@/components';
 import { palette, spacing } from '@/theme';
-import { AiService } from '@/services/aiService';
+import { AiService, ThinkingProgress } from '@/services/aiService';
 
 // --- Types ---
 interface Message {
@@ -37,6 +38,16 @@ interface ChatSession {
 
 const STORAGE_KEY = '@finai_chats';
 
+// Stage icons and colors for the thinking progress
+const THINKING_STAGES = {
+  analyzing: { icon: '🔍', label: 'Analyzing question' },
+  searching: { icon: '📚', label: 'Searching knowledge base' },
+  fetching: { icon: '📊', label: 'Fetching financial data' },
+  building: { icon: '🔧', label: 'Preparing context' },
+  generating: { icon: '🧠', label: 'Generating response' },
+  complete: { icon: '✅', label: 'Done' },
+};
+
 export const AIChatScreen = () => {
   // State
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -45,8 +56,12 @@ export const AIChatScreen = () => {
   
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [thinkingProgress, setThinkingProgress] = useState<ThinkingProgress | null>(null);
   const [modelStatus, setModelStatus] = useState<'LOADING' | 'READY' | 'MISSING'>('LOADING');
   const [isSidebarVisible, setSidebarVisible] = useState(false);
+  
+  // Animation for pulsing effect
+  const pulseAnim = useRef(new Animated.Value(1)).current;
   
   const flatListRef = useRef<FlatList>(null);
   
@@ -64,6 +79,22 @@ export const AIChatScreen = () => {
     init();
     return () => { AiService.release(); };
   }, []);
+
+  // Pulse animation for thinking indicator
+  useEffect(() => {
+    if (isTyping) {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 0.6, duration: 800, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
+        ])
+      );
+      pulse.start();
+      return () => pulse.stop();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [isTyping, pulseAnim]);
 
   // Sync Ref with State
   useEffect(() => {
@@ -98,6 +129,7 @@ export const AIChatScreen = () => {
   // 4. Session Logic
   const startNewChat = async () => {
     setIsTyping(false); // Reset typing state
+    setThinkingProgress(null); // Reset thinking progress
     setInputText('');
     setSidebarVisible(false);
 
@@ -180,6 +212,7 @@ export const AIChatScreen = () => {
 
   const loadSession = (session: ChatSession) => {
     setIsTyping(false); // Reset typing state immediately
+    setThinkingProgress(null); // Reset thinking progress
     setInputText('');
     setSidebarVisible(false);
     
@@ -211,6 +244,7 @@ export const AIChatScreen = () => {
     setMessages(prev => [...prev, userMsg]);
     setInputText('');
     setIsTyping(true);
+    setThinkingProgress({ stage: 'analyzing', message: 'Analyzing your question...' });
 
     // Determine if this is the first real message (after welcome message)
     const currentSession = sessions.find(s => s.id === chatContextId);
@@ -235,13 +269,33 @@ export const AIChatScreen = () => {
         .filter(m => m.id !== 'welcome') // Skip welcome message
         .map(m => ({ text: m.text, sender: m.sender }));
       
-      const responseText = await AiService.generateResponse(userText, historyForAI);
+      // Progress callback to update thinking UI
+      const handleProgress = (progress: ThinkingProgress) => {
+        // Only update if still on the same chat
+        if (activeSessionRef.current === chatContextId) {
+          setThinkingProgress(progress);
+        }
+      };
+      
+      const responseText = await AiService.generateResponse(userText, historyForAI, handleProgress);
+      
+      // If response is empty (aborted), don't add a message
+      if (!responseText) {
+        console.log('[UI] Empty response (likely aborted)');
+        if (activeSessionRef.current === chatContextId) {
+          setIsTyping(false);
+          setThinkingProgress(null);
+        }
+        return;
+      }
+      
       const aiMsg: Message = { id: (Date.now() + 1).toString(), text: responseText, sender: 'ai', timestamp: Date.now() };
       
       // Only update UI if user is still looking at THIS chat
       if (activeSessionRef.current === chatContextId) {
           setMessages(prev => [...prev, aiMsg]);
           setIsTyping(false);
+          setThinkingProgress(null);
       }
 
       // Save AI Message + Generate Title if First Message (Background Safe)
@@ -277,8 +331,17 @@ export const AIChatScreen = () => {
       if (activeSessionRef.current === chatContextId) {
           setMessages(prev => [...prev, { id: 'err', text: 'Error thinking.', sender: 'ai', timestamp: Date.now() }]);
           setIsTyping(false);
+          setThinkingProgress(null);
       }
     }
+  };
+
+  // 6. Stop/Cancel Generation
+  const handleStop = () => {
+    console.log('[UI] User requested stop');
+    AiService.requestAbort();
+    setIsTyping(false);
+    setThinkingProgress(null);
   };
 
   // --- Render Helpers ---
@@ -332,10 +395,47 @@ export const AIChatScreen = () => {
         />
 
         {isTyping && (
-          <View style={styles.typingContainer}>
-            <ActivityIndicator size="small" color={palette.accent} />
-            <Text style={styles.typingText}>Analyst is thinking...</Text>
-          </View>
+          <Animated.View style={[styles.thinkingContainer, { opacity: pulseAnim }]}>
+            <View style={styles.thinkingHeader}>
+              <View style={styles.thinkingIconContainer}>
+                <Sparkles size={20} color="#A78BFA" />
+              </View>
+              <View style={styles.thinkingTextContainer}>
+                <Text style={styles.thinkingMessage}>
+                  {thinkingProgress?.message || 'Thinking...'}
+                </Text>
+                {thinkingProgress?.detail && (
+                  <Text style={styles.thinkingDetail}>{thinkingProgress.detail}</Text>
+                )}
+              </View>
+            </View>
+            <View style={styles.thinkingStages}>
+              {(['analyzing', 'searching', 'fetching', 'building', 'generating'] as const).map((stage, index) => {
+                const stageInfo = THINKING_STAGES[stage];
+                const currentStageIndex = thinkingProgress 
+                  ? ['analyzing', 'searching', 'fetching', 'building', 'generating'].indexOf(thinkingProgress.stage)
+                  : 0;
+                const isActive = index === currentStageIndex;
+                const isCompleted = index < currentStageIndex;
+                
+                return (
+                  <View key={stage} style={styles.stageIndicator}>
+                    <View style={[
+                      styles.stageDot,
+                      isCompleted && styles.stageDotCompleted,
+                      isActive && styles.stageDotActive,
+                    ]} />
+                    {index < 4 && (
+                      <View style={[
+                        styles.stageLine,
+                        isCompleted && styles.stageLineCompleted,
+                      ]} />
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          </Animated.View>
         )}
 
         <KeyboardAvoidingView 
@@ -349,16 +449,25 @@ export const AIChatScreen = () => {
               placeholderTextColor={palette.mutedText}
               value={inputText}
               onChangeText={setInputText}
-              editable={modelStatus === 'READY'}
+              editable={modelStatus === 'READY' && !isTyping}
               multiline
             />
-            <TouchableOpacity 
-              onPress={handleSend} 
-              disabled={modelStatus !== 'READY' || !inputText.trim()}
-              style={[styles.sendBtn, { opacity: inputText.trim() ? 1 : 0.5 }]}
-            >
-              <Send size={20} color="#FFF" />
-            </TouchableOpacity>
+            {isTyping ? (
+              <TouchableOpacity 
+                onPress={handleStop} 
+                style={styles.stopBtn}
+              >
+                <Square size={16} color="#FFF" fill="#FFF" />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity 
+                onPress={handleSend} 
+                disabled={modelStatus !== 'READY' || !inputText.trim()}
+                style={[styles.sendBtn, { opacity: inputText.trim() ? 1 : 0.5 }]}
+              >
+                <Send size={20} color="#FFF" />
+              </TouchableOpacity>
+            )}
           </View>
         </KeyboardAvoidingView>
       </View>
@@ -457,9 +566,81 @@ const styles = StyleSheet.create({
   aiBubble: { backgroundColor: '#1E1E1E', borderBottomLeftRadius: 4 },
   msgText: { color: '#FFF', fontSize: 16, lineHeight: 24 },
 
-  // Typing
+  // Typing (Legacy - kept for backwards compatibility)
   typingContainer: { flexDirection: 'row', alignItems: 'center', marginLeft: 20, marginBottom: 12, gap: 8 },
   typingText: { color: palette.mutedText, fontSize: 12 },
+
+  // Thinking Progress (New live progress UI)
+  thinkingContainer: {
+    backgroundColor: '#1A1A2E',
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+  },
+  thinkingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  thinkingIconContainer: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(167, 139, 250, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  thinkingTextContainer: {
+    flex: 1,
+  },
+  thinkingMessage: {
+    color: '#E1E1E1',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  thinkingDetail: {
+    color: palette.mutedText,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  thinkingStages: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  stageIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  stageDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  stageDotActive: {
+    backgroundColor: '#6366F1',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  stageDotCompleted: {
+    backgroundColor: '#10B981',
+  },
+  stageLine: {
+    width: 24,
+    height: 2,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    marginHorizontal: 4,
+  },
+  stageLineCompleted: {
+    backgroundColor: '#10B981',
+  },
 
   // FIXED INPUT AREA
   inputContainer: {
@@ -490,6 +671,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 4, // Align visually with text
+    marginLeft: 8,
+  },
+  stopBtn: {
+    backgroundColor: '#DC2626',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 4,
     marginLeft: 8,
   },
 
