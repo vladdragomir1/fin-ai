@@ -1,6 +1,7 @@
 import { databaseService } from './databaseService';
 import { financeApiService } from './financeApiService';
 import type { ProgressCallback } from './aiService';
+import { isMarketOpen, getModuleCacheTTL } from '@/utils/marketHours';
 
 /**
  * RAG (Retrieval Augmented Generation) Service
@@ -59,13 +60,57 @@ interface RAGContext {
   contextText: string;
 }
 
+// --- SPEED OPTIMIZATION: Smart Caching (Market-Aware) ---
+// Prevents redundant API calls when data was recently fetched
+// Aligns with databaseService TTL: shorter during market hours, longer when closed
+const lastRefreshTime: { [key: string]: number } = {};  // Tracks when each data type was last refreshed
+
+/**
+ * Get cache TTL based on market status
+ * - Market Open: 5 minutes (data changes frequently)
+ * - Market Closed: 30 minutes (data is static, but allow some refresh)
+ */
+const getRagCacheTTL = (): number => {
+  if (isMarketOpen()) {
+    return 5 * 60 * 1000;  // 5 minutes during trading
+  }
+  return 30 * 60 * 1000;   // 30 minutes when closed (database has 24hr, but RAG can be more flexible)
+};
+
+/**
+ * Check if data needs refresh (older than market-aware TTL)
+ */
+const needsRefresh = (cacheKey: string): boolean => {
+  const lastRefresh = lastRefreshTime[cacheKey] || 0;
+  const age = Date.now() - lastRefresh;
+  const ttl = getRagCacheTTL();
+  const shouldRefresh = age > ttl;
+  if (!shouldRefresh) {
+    console.log(`[RAG] ⚡ Cache HIT for ${cacheKey} (${Math.round(age/1000)}s old, TTL: ${ttl/1000}s)`);
+  }
+  return shouldRefresh;
+};
+
+/**
+ * Mark data as freshly refreshed
+ */
+const markRefreshed = (cacheKey: string): void => {
+  lastRefreshTime[cacheKey] = Date.now();
+};
+
 class RAGService {
 
   /**
    * Helper: Refresh ALL market-wide data from API before AI analysis.
+   * OPTIMIZED: Only refreshes if data is older than CACHE_TTL_MS (5 min)
    * This ensures LFM2 has the same data as the user sees in the app.
    */
   private async refreshMarketData(): Promise<void> {
+    // ⚡ SPEED: Skip if recently refreshed
+    if (!needsRefresh('market_data')) {
+      return;
+    }
+    
     try {
       console.log(`RAG: Refreshing market-wide data...`);
       
@@ -98,6 +143,9 @@ class RAGService {
       const calendarSuccess = calendarResults.filter(r => r.status === 'fulfilled').length;
       console.log(`RAG: ✅ Refreshed ${calendarSuccess}/6 calendar feeds`);
       
+      // ⚡ Mark as refreshed to prevent redundant calls
+      markRefreshed('market_data');
+      
     } catch (error) {
       console.warn(`RAG: Could not refresh market data (using cached)`, error);
     }
@@ -105,17 +153,26 @@ class RAGService {
 
   /**
    * Helper: Trigger a fresh data fetch from API before analyzing.
+   * OPTIMIZED: Only refreshes if company data is older than CACHE_TTL_MS (5 min)
    * This updates the SQLite cache so the AI has the latest numbers.
    */
   private async refreshCompanyData(
     symbol: string, 
     onProgress?: (message: string, detail?: string) => void
   ): Promise<void> {
+    const cacheKey = `company_${symbol}`;
+    
+    // ⚡ SPEED: Skip if recently refreshed (saves 20-40 seconds!)
+    if (!needsRefresh(cacheKey)) {
+      onProgress?.('Using cached data...', `${symbol} (fresh)`);
+      return;
+    }
+    
     try {
-      console.log(`RAG: Checking for fresh data for ${symbol}...`);
+      console.log(`RAG: Fetching fresh data for ${symbol}...`);
       onProgress?.('Fetching stock quote...', symbol);
       
-      // Phase 1: Core financial data (most important)
+      // Phase 1: Core financial data (most important) - ALWAYS fetch these
       const coreResults = await Promise.allSettled([
         financeApiService.getStockQuote(symbol),
         financeApiService.getCompanyOverview(symbol),
@@ -128,30 +185,30 @@ class RAGService {
         console.log(`RAG: ✅ Refreshed ${coreSuccessCount}/3 core endpoints for ${symbol}`);
       }
       
-      onProgress?.('Loading financial modules...', `Earnings, recommendations, filings`);
+      // ⚡ SPEED OPTIMIZATION: Only fetch extended modules if core data succeeded
+      if (coreSuccessCount >= 2) {
+        onProgress?.('Loading financial modules...', `Analysis data`);
+        
+        // Phase 2: MINIMAL extended modules - only what we actually display in context
+        // Fetches 4 key modules (was 9, originally 14) - prioritize speed!
+        const extendedResults = await Promise.allSettled([
+          financeApiService.getStockModule(symbol, 'financial-data'),      // Profit margins, ROE, target price
+          financeApiService.getStockModule(symbol, 'earnings-history'),    // Past earnings
+          financeApiService.getStockModule(symbol, 'recommendation-trend'),// Analyst buy/hold/sell
+          financeApiService.getStockModule(symbol, 'calendar-events'),     // Next earnings date
+          // Skipped for speed (not used in concise context):
+          // 'statistics', 'upgrade-downgrade-history', 'income-statement', 
+          // 'balance-sheet', 'insider-holders', 'institution-ownership', 
+          // 'cashflow-statement', 'sec-filings', 'index-trend', 'net-share-purchase-activity'
+        ]);
+        
+        const extendedSuccessCount = extendedResults.filter(r => r.status === 'fulfilled').length;
+        console.log(`RAG: ✅ Refreshed ${extendedSuccessCount}/4 key modules for ${symbol}`);
+      }
       
-      // Phase 2: Extended modules (same as CompanyDetailsScreen)
-      // These are fetched in background to populate the cache for comprehensive AI context
-      const extendedResults = await Promise.allSettled([
-        financeApiService.getStockModule(symbol, 'financial-data'),
-        financeApiService.getStockModule(symbol, 'statistics'),
-        financeApiService.getStockModule(symbol, 'earnings-history'),
-        financeApiService.getStockModule(symbol, 'recommendation-trend'),
-        financeApiService.getStockModule(symbol, 'insider-holders'),
-        financeApiService.getStockModule(symbol, 'institution-ownership'),
-        financeApiService.getStockModule(symbol, 'income-statement'),
-        financeApiService.getStockModule(symbol, 'balance-sheet'),
-        financeApiService.getStockModule(symbol, 'cashflow-statement'),
-        financeApiService.getStockModule(symbol, 'upgrade-downgrade-history'),
-        financeApiService.getStockModule(symbol, 'sec-filings'),
-        financeApiService.getStockModule(symbol, 'calendar-events'),
-        financeApiService.getStockModule(symbol, 'index-trend'),
-        financeApiService.getStockModule(symbol, 'net-share-purchase-activity'),
-      ]);
-      
-      const extendedSuccessCount = extendedResults.filter(r => r.status === 'fulfilled').length;
-      console.log(`RAG: ✅ Refreshed ${extendedSuccessCount}/14 extended modules for ${symbol}`);
-      onProgress?.('Analyzing financial data...', `Loaded ${extendedSuccessCount} modules`);
+      // ⚡ Mark as refreshed to prevent redundant calls
+      markRefreshed(cacheKey);
+      onProgress?.('Data ready', symbol);
       
     } catch (error) {
       // If offline, we just log a warning and proceed with existing DB data
@@ -212,477 +269,82 @@ class RAGService {
       return `### ${symbol}\n\nNo financial data available yet. The data may still be loading or the symbol might be invalid. Try searching for this company in the Browse Stocks screen first.`;
     }
 
-    let context = `### Financial Data for ${symbol}\n`;
+    let context = `### ${symbol}\n`;
 
-    // Company Overview
+    // Company Overview - CONCISE version
     if (data.overview) {
-      context += `**Overview**\n`;
-      context += `Name: ${data.overview.name}\n`;
-      context += `Sector: ${data.overview.sector}\n`;
-      context += `Industry: ${data.overview.industry}\n`;
-      if (data.overview.exchange) context += `Exchange: ${data.overview.exchange}\n`;
-      if (data.overview.country) context += `Country: ${data.overview.country}\n`;
-      if (data.overview.website) context += `Website: ${data.overview.website}\n`;
-      if (data.overview.employees) context += `Employees: ${data.overview.employees.toLocaleString()}\n`;
-      if (data.overview.description) {
-        // Increased description length for better context
-        const desc = data.overview.description.length > 500 
-          ? data.overview.description.substring(0, 500) + "..." 
-          : data.overview.description;
-        context += `Description: ${desc}\n`;
-      }
-      context += `\n`;
+      context += `**${data.overview.name}** | ${data.overview.sector} | ${data.overview.industry}\n`;
+      // Skip: exchange, country, website, employees, description (too verbose)
     }
 
-    // Current Quote
+    // Current Quote - CONCISE
     if (data.quote) {
-      context += `**Current Market Data**\n`;
-      context += `Price: $${safeFixed(data.quote.price)}\n`;
-      context += `Change: ${data.quote.change >= 0 ? '+' : ''}${safeFixed(data.quote.change)} (${safeFixed(data.quote.changePercent)}%)\n`;
-      context += `Day Range: $${safeFixed(data.quote.low)} - $${safeFixed(data.quote.high)}\n`;
-      if (data.quote.open) context += `Open: $${safeFixed(data.quote.open)}\n`;
-      if (data.quote.previousClose) context += `Previous Close: $${safeFixed(data.quote.previousClose)}\n`;
-      // Only show volume if it's available and greater than 0
-      if (data.quote.volume && data.quote.volume > 0) {
-        context += `Volume: ${data.quote.volume.toLocaleString()}\n`;
-      }
-      if (data.quote.avgVolume && data.quote.avgVolume > 0) {
-        context += `Avg Volume: ${data.quote.avgVolume.toLocaleString()}\n`;
-      }
-      context += `\n`;
+      context += `\n**Price:** $${safeFixed(data.quote.price)} (${data.quote.change >= 0 ? '+' : ''}${safeFixed(data.quote.changePercent)}%)\n`;
     }
 
-    // Financial Metrics
+    // Key Metrics - CONCISE (only most important)
     if (data.metrics) {
-      context += `**Key Fundamentals**\n`;
-      if (data.metrics.peRatio) context += `P/E Ratio: ${safeFixed(data.metrics.peRatio)}\n`;
-      if (data.metrics.forwardPE) context += `Forward P/E: ${safeFixed(data.metrics.forwardPE)}\n`;
-      if (data.metrics.eps) context += `EPS: $${safeFixed(data.metrics.eps)}\n`;
-      if (data.metrics.forwardEps) context += `Forward EPS: $${safeFixed(data.metrics.forwardEps)}\n`;
-      if (data.metrics.marketCap) context += `Market Cap: $${safeBillion(data.metrics.marketCap)} Billion\n`;
-      if (data.metrics.dividendYield) context += `Dividend Yield: ${safeFixed(data.metrics.dividendYield)}%\n`;
-      if (data.metrics.dividendRate) context += `Dividend Rate: $${safeFixed(data.metrics.dividendRate)}\n`;
-      if (data.metrics.beta) context += `Beta: ${safeFixed(data.metrics.beta)}\n`;
-      if (data.metrics.weekHigh52) context += `52-Week High: $${safeFixed(data.metrics.weekHigh52)}\n`;
-      if (data.metrics.weekLow52) context += `52-Week Low: $${safeFixed(data.metrics.weekLow52)}\n`;
-      if (data.metrics.avgVolume10Day) context += `10-Day Avg Volume: ${data.metrics.avgVolume10Day.toLocaleString()}\n`;
-      context += `\n`;
+      let metricsLine = '**Metrics:** ';
+      const parts = [];
+      if (data.metrics.peRatio) parts.push(`P/E ${safeFixed(data.metrics.peRatio)}`);
+      if (data.metrics.eps) parts.push(`EPS $${safeFixed(data.metrics.eps)}`);
+      if (data.metrics.marketCap) parts.push(`MCap $${safeBillion(data.metrics.marketCap)}B`);
+      if (data.metrics.dividendYield) parts.push(`Div ${safeFixed(data.metrics.dividendYield)}%`);
+      context += metricsLine + parts.join(' | ') + '\n';
     }
 
-    // Recent Price Trend (Limited to 5 days for focus)
-    if (data.historical && data.historical.length > 0) {
-      const recent = data.historical.slice(-5);
-      context += `**Recent Price History (Last 5 Days)**\n`;
-      recent.forEach((point: any) => {
-        context += `- ${point.date}: $${safeFixed(point.price)}\n`;
-      });
-      context += `\n`;
-    }
+    // SKIP: Recent Price History - not needed for most questions
+    // if (data.historical) { ... }
 
-    // Earnings History (if available)
-    // API returns: { history: [...] } - need to access the nested array
+    // Earnings History - CONCISE (only last 2 quarters)
     const earningsList = data.earnings?.history || (Array.isArray(data.earnings) ? data.earnings : null);
     if (earningsList && earningsList.length > 0) {
-      context += `**Recent Earnings (Last 4 Quarters)**\n`;
-      earningsList.slice(-4).forEach((earning: any) => {
-        const date = earning.quarterDisplay || earning.date || earning.quarter || 'N/A';
-        const epsActual = earning.epsActual ?? earning.actual;
-        const epsEstimate = earning.epsEstimate ?? earning.estimate;
-        const surprise = earning.epsSurprise ?? earning.surprise;
-        const surprisePct = earning.surprisePercent ?? earning.epsSurprisePercent;
-        
-        context += `- **${date}**: `;
-        if (epsActual !== undefined) context += `EPS $${safeFixed(epsActual)}`;
-        if (epsEstimate !== undefined) context += ` (Est: $${safeFixed(epsEstimate)})`;
-        if (surprisePct !== undefined) {
-          const sign = surprisePct >= 0 ? '+' : '';
-          context += ` | Surprise: ${sign}${safeFixed(surprisePct)}%`;
-        }
-        context += `\n`;
+      context += `**Earnings:** `;
+      const parts = earningsList.slice(-2).map((e: any) => {
+        // Handle various date formats (some are objects with .fmt, some are strings)
+        let dateStr = 'Q?';
+        if (e.quarterDisplay?.fmt) dateStr = e.quarterDisplay.fmt;
+        else if (typeof e.quarterDisplay === 'string') dateStr = e.quarterDisplay;
+        else if (e.quarter?.fmt) dateStr = e.quarter.fmt;
+        else if (typeof e.quarter === 'string') dateStr = e.quarter;
+        else if (e.fiscalDateEnding) dateStr = e.fiscalDateEnding;
+        const eps = e.epsActual?.raw ?? e.epsActual ?? e.actual;
+        return `${dateStr}: $${safeFixed(eps)}`;
       });
-      context += `\n`;
+      context += parts.join(', ') + '\n';
     }
 
-    // Analyst Recommendations (if available)
-    // API returns: { trend: [...] } - need to access the nested array
+    // Analyst Recommendations - CONCISE (one line)
     const recommendationList = data.recommendations?.trend || (Array.isArray(data.recommendations) ? data.recommendations : null);
     if (recommendationList && recommendationList.length > 0) {
       const latest = recommendationList[0];
       if (latest) {
-        context += `**Analyst Recommendations**\n`;
-        const period = latest.period || latest.date || 'Current';
-        context += `Period: ${period}\n`;
-        if (latest.strongBuy) context += `Strong Buy: ${latest.strongBuy}\n`;
-        if (latest.buy) context += `Buy: ${latest.buy}\n`;
-        if (latest.hold) context += `Hold: ${latest.hold}\n`;
-        if (latest.sell) context += `Sell: ${latest.sell}\n`;
-        if (latest.strongSell) context += `Strong Sell: ${latest.strongSell}\n`;
-        context += `\n`;
+        const buy = (latest.strongBuy || 0) + (latest.buy || 0);
+        const hold = latest.hold || 0;
+        const sell = (latest.sell || 0) + (latest.strongSell || 0);
+        context += `**Analysts:** ${buy} Buy, ${hold} Hold, ${sell} Sell\n`;
       }
     }
 
-    // Insider Trading (if available)
-    // API returns: { holders: [...] } - need to access the nested array
-    const insiderList = data.insiders?.holders || (Array.isArray(data.insiders) ? data.insiders : null);
-    if (insiderList && insiderList.length > 0) {
-      context += `**Recent Insider Activity (Last 5 Holders)**\n`;
-      insiderList.slice(0, 5).forEach((insider: any) => {
-        const name = insider.name || insider.filerName || 'Unknown';
-        const position = insider.relation || insider.position || '';
-        const shares = insider.positionDirect || insider.shares || insider.latestTransDate;
-        const transactionType = insider.transactionDescription || insider.transactionType || '';
-        
-        context += `- **${name}**`;
-        if (position) context += ` (${position})`;
-        context += `\n`;
-        if (shares && typeof shares === 'number') {
-          context += `  Direct Holdings: ${shares.toLocaleString()} shares\n`;
-        }
-        if (transactionType) context += `  Latest: ${transactionType}\n`;
-      });
-      context += `\n`;
+    // SKIP verbose sections for speed - only include if specifically asked
+    // Insider Trading, Institutional Ownership, Technical Indicators - skipped
+
+    // Calendar Events - CONCISE (only next earnings date)
+    if (data.calendarEvents?.earnings?.earningsDate?.[0]) {
+      const earningsDate = data.calendarEvents.earnings.earningsDate[0];
+      const dateStr = earningsDate.fmt || (earningsDate.raw ? new Date(earningsDate.raw * 1000).toLocaleDateString() : null);
+      if (dateStr) context += `**Next Earnings:** ${dateStr}\n`;
     }
 
-    // Institutional Ownership (if available)
-    // API returns: { ownershipList: [...] } - need to access the nested array
-    const institutionList = data.institutions?.ownershipList || (Array.isArray(data.institutions) ? data.institutions : null);
-    if (institutionList && institutionList.length > 0) {
-      context += `**Top Institutional Holders (Top 5)**\n`;
-      institutionList.slice(0, 5).forEach((inst: any) => {
-        const holder = inst.organization || inst.holder || inst.name || 'Unknown';
-        const shares = inst.position || inst.shares || inst.value;
-        const pctHeld = inst.pctHeld || inst.percentHeld;
-        const reportDate = inst.reportDate || '';
-        
-        context += `- **${holder}**`;
-        if (shares && typeof shares === 'number') {
-          context += `: ${shares.toLocaleString()} shares`;
-        }
-        if (pctHeld) {
-          context += ` (${safeFixed(pctHeld, 2, '?')}%)`;
-        }
-        if (reportDate) context += ` - as of ${reportDate}`;
-        context += `\n`;
-      });
-      context += `\n`;
-    }
-
-    // Technical Indicators (if available)
-    if (data.technicalIndicators) {
-      const hasAnyIndicator = data.technicalIndicators.sma || data.technicalIndicators.rsi || 
-                              data.technicalIndicators.macd || data.technicalIndicators.adx;
-      if (hasAnyIndicator) {
-        context += `**Technical Indicators**\n`;
-        if (data.technicalIndicators.rsi) {
-          const rsiValues = Object.values(data.technicalIndicators.rsi);
-          const latestRSI: any = rsiValues[rsiValues.length - 1];
-          if (latestRSI?.rsi && typeof latestRSI.rsi === 'number') {
-            context += `RSI (14): ${safeFixed(latestRSI.rsi)} - `;
-            if (latestRSI.rsi > 70) context += `Overbought\n`;
-            else if (latestRSI.rsi < 30) context += `Oversold\n`;
-            else context += `Neutral\n`;
-          }
-        }
-        if (data.technicalIndicators.macd) {
-          const macdValues = Object.values(data.technicalIndicators.macd);
-          const latestMACD: any = macdValues[macdValues.length - 1];
-          if (latestMACD?.macd && latestMACD?.signal && typeof latestMACD.macd === 'number') {
-            const signal = latestMACD.macd > latestMACD.signal ? 'Bullish' : 'Bearish';
-            context += `MACD: ${signal} signal\n`;
-          }
-        }
-        context += `\n`;
-      }
-    }
-
-    // Financial Data (if available) - Profitability & Valuation metrics
-    // API returns: { profitMargins: {fmt, raw}, grossMargins: {fmt, raw}, ... }
+    // Financial Data - CONCISE (key metrics only in one line)
     if (data.financialData) {
       const fd = data.financialData;
-      // Helper to extract value (supports both {raw, fmt} and plain values)
       const getValue = (val: any) => val?.raw ?? val;
-      const getFmt = (val: any) => val?.fmt || null;
-      
-      const hasFinancialMetrics = fd.profitMargins || fd.grossMargins || fd.operatingMargins || 
-                                   fd.returnOnAssets || fd.returnOnEquity || fd.currentRatio ||
-                                   fd.debtToEquity || fd.freeCashflow || fd.revenueGrowth;
-      if (hasFinancialMetrics) {
-        context += `**Financial Health Metrics**\n`;
-        if (fd.profitMargins) context += `Profit Margin: ${getFmt(fd.profitMargins) || safePercent(getValue(fd.profitMargins)) + '%'}\n`;
-        if (fd.grossMargins) context += `Gross Margin: ${getFmt(fd.grossMargins) || safePercent(getValue(fd.grossMargins)) + '%'}\n`;
-        if (fd.operatingMargins) context += `Operating Margin: ${getFmt(fd.operatingMargins) || safePercent(getValue(fd.operatingMargins)) + '%'}\n`;
-        if (fd.returnOnAssets) context += `Return on Assets: ${getFmt(fd.returnOnAssets) || safePercent(getValue(fd.returnOnAssets)) + '%'}\n`;
-        if (fd.returnOnEquity) context += `Return on Equity: ${getFmt(fd.returnOnEquity) || safePercent(getValue(fd.returnOnEquity)) + '%'}\n`;
-        if (fd.currentRatio) context += `Current Ratio: ${getFmt(fd.currentRatio) || safeFixed(getValue(fd.currentRatio))}\n`;
-        if (fd.debtToEquity) context += `Debt to Equity: ${getFmt(fd.debtToEquity) || safeFixed(getValue(fd.debtToEquity))}\n`;
-        if (fd.freeCashflow) context += `Free Cash Flow: ${getFmt(fd.freeCashflow) || '$' + safeBillion(getValue(fd.freeCashflow)) + 'B'}\n`;
-        if (fd.revenueGrowth) context += `Revenue Growth: ${getFmt(fd.revenueGrowth) || safePercent(getValue(fd.revenueGrowth)) + '%'}\n`;
-        if (fd.earningsGrowth) context += `Earnings Growth: ${getFmt(fd.earningsGrowth) || safePercent(getValue(fd.earningsGrowth)) + '%'}\n`;
-        if (fd.targetHighPrice && fd.targetLowPrice) {
-          const low = getValue(fd.targetLowPrice);
-          const high = getValue(fd.targetHighPrice);
-          context += `Analyst Price Target: $${safeFixed(low)} - $${safeFixed(high)}\n`;
-        }
-        if (fd.targetMeanPrice) {
-          const mean = getValue(fd.targetMeanPrice);
-          context += `Mean Price Target: $${safeFixed(mean)}\n`;
-        }
-        if (fd.recommendationKey) context += `Analyst Consensus: ${fd.recommendationKey.toUpperCase()}\n`;
-        if (fd.numberOfAnalystOpinions) {
-          const num = getValue(fd.numberOfAnalystOpinions);
-          context += `Number of Analyst Opinions: ${num}\n`;
-        }
-        context += `\n`;
-      }
-    }
-
-    // Statistics Module (if available) - Share statistics
-    // API returns: { sharesOutstanding: {fmt, raw}, floatShares: {fmt, raw}, ... }
-    if (data.statistics) {
-      const stats = data.statistics;
-      const hasStats = stats.sharesOutstanding || stats.floatShares || stats.sharesShort ||
-                       stats.shortRatio || stats.enterpriseValue || stats.forwardPE;
-      if (hasStats) {
-        context += `**Share Statistics**\n`;
-        // Helper to extract value (supports both {raw, fmt} and plain values)
-        const getValue = (val: any) => val?.raw ?? val;
-        const getFmt = (val: any) => val?.fmt || null;
-        
-        if (stats.sharesOutstanding) {
-          const v = getValue(stats.sharesOutstanding);
-          context += `Shares Outstanding: ${getFmt(stats.sharesOutstanding) || safeBillion(v) + 'B'}\n`;
-        }
-        if (stats.floatShares) {
-          const v = getValue(stats.floatShares);
-          context += `Float Shares: ${getFmt(stats.floatShares) || safeBillion(v) + 'B'}\n`;
-        }
-        if (stats.sharesShort) {
-          const v = getValue(stats.sharesShort);
-          context += `Shares Short: ${getFmt(stats.sharesShort) || safeMillion(v) + 'M'}\n`;
-        }
-        if (stats.shortRatio) {
-          const v = getValue(stats.shortRatio);
-          context += `Short Ratio: ${getFmt(stats.shortRatio) || safeFixed(v)}\n`;
-        }
-        if (stats.shortPercentOfFloat) {
-          const v = getValue(stats.shortPercentOfFloat);
-          context += `Short % of Float: ${getFmt(stats.shortPercentOfFloat) || safePercent(v) + '%'}\n`;
-        }
-        if (stats.enterpriseValue) {
-          const v = getValue(stats.enterpriseValue);
-          context += `Enterprise Value: ${getFmt(stats.enterpriseValue) || '$' + safeBillion(v) + 'B'}\n`;
-        }
-        if (stats.forwardPE) {
-          const v = getValue(stats.forwardPE);
-          context += `Forward P/E: ${getFmt(stats.forwardPE) || safeFixed(v)}\n`;
-        }
-        if (stats.pegRatio) {
-          const v = getValue(stats.pegRatio);
-          context += `PEG Ratio: ${getFmt(stats.pegRatio) || safeFixed(v)}\n`;
-        }
-        if (stats.priceToBook) {
-          const v = getValue(stats.priceToBook);
-          context += `Price to Book: ${getFmt(stats.priceToBook) || safeFixed(v)}\n`;
-        }
-        if (stats.enterpriseToRevenue) {
-          const v = getValue(stats.enterpriseToRevenue);
-          context += `EV/Revenue: ${getFmt(stats.enterpriseToRevenue) || safeFixed(v)}\n`;
-        }
-        if (stats.enterpriseToEbitda) {
-          const v = getValue(stats.enterpriseToEbitda);
-          context += `EV/EBITDA: ${getFmt(stats.enterpriseToEbitda) || safeFixed(v)}\n`;
-        }
-        context += `\n`;
-      }
-    }
-
-    // Financial Statement Summary with key figures (if available)
-    if (data.incomeStatement || data.balanceSheet || data.cashflowStatement) {
-      context += `**Financial Statements**\n`;
-      
-      // Income Statement highlights
-      if (data.incomeStatement && Array.isArray(data.incomeStatement) && data.incomeStatement.length > 0) {
-        const latest = data.incomeStatement[0];
-        context += `Income Statement (${latest.asOfDate || latest.endDate || 'Latest'}):\n`;
-        if (latest.totalRevenue) context += `  Revenue: $${safeBillion(latest.totalRevenue)}B\n`;
-        if (latest.grossProfit) context += `  Gross Profit: $${safeBillion(latest.grossProfit)}B\n`;
-        if (latest.operatingIncome) context += `  Operating Income: $${safeBillion(latest.operatingIncome)}B\n`;
-        if (latest.netIncome) context += `  Net Income: $${safeBillion(latest.netIncome)}B\n`;
-      }
-      
-      // Balance Sheet highlights
-      if (data.balanceSheet && Array.isArray(data.balanceSheet) && data.balanceSheet.length > 0) {
-        const latest = data.balanceSheet[0];
-        context += `Balance Sheet (${latest.asOfDate || latest.endDate || 'Latest'}):\n`;
-        if (latest.totalAssets) context += `  Total Assets: $${safeBillion(latest.totalAssets)}B\n`;
-        if (latest.totalLiabilities) context += `  Total Liabilities: $${safeBillion(latest.totalLiabilities)}B\n`;
-        if (latest.totalEquity || latest.stockholdersEquity) context += `  Stockholders Equity: $${safeBillion(latest.totalEquity || latest.stockholdersEquity)}B\n`;
-        if (latest.cash || latest.cashAndCashEquivalents) context += `  Cash: $${safeBillion(latest.cash || latest.cashAndCashEquivalents)}B\n`;
-        if (latest.totalDebt || latest.longTermDebt) context += `  Total Debt: $${safeBillion(latest.totalDebt || latest.longTermDebt)}B\n`;
-      }
-      
-      // Cashflow highlights
-      if (data.cashflowStatement && Array.isArray(data.cashflowStatement) && data.cashflowStatement.length > 0) {
-        const latest = data.cashflowStatement[0];
-        context += `Cash Flow (${latest.asOfDate || latest.endDate || 'Latest'}):\n`;
-        if (latest.operatingCashFlow) context += `  Operating CF: $${safeBillion(latest.operatingCashFlow)}B\n`;
-        if (latest.capitalExpenditure) context += `  CapEx: $${safeBillion(latest.capitalExpenditure)}B\n`;
-        if (latest.freeCashFlow) context += `  Free CF: $${safeBillion(latest.freeCashFlow)}B\n`;
-      }
-      context += `\n`;
-    }
-
-    // Upgrade/Downgrade History (if available)
-    // API returns: { history: [...] } - need to access the nested array
-    const upgradeList = data.upgradeDowngrade?.history || (Array.isArray(data.upgradeDowngrade) ? data.upgradeDowngrade : null);
-    if (upgradeList && upgradeList.length > 0) {
-      context += `**Recent Analyst Rating Changes (Last 5)**\n`;
-      upgradeList.slice(0, 5).forEach((action: any) => {
-        const firm = action.firm || action.company || 'Unknown';
-        const toGrade = action.toGrade || action.newGrade || action.grade;
-        const fromGrade = action.fromGrade || action.oldGrade;
-        const actionType = action.action || (fromGrade ? 'Change' : 'Initiate');
-        const date = action.date || action.epochGradeDate || '';
-        
-        context += `- **${firm}**: ${actionType}`;
-        if (fromGrade && toGrade) {
-          context += ` from ${fromGrade} to ${toGrade}`;
-        } else if (toGrade) {
-          context += ` → ${toGrade}`;
-        }
-        if (date) context += ` (${date})`;
-        context += `\n`;
-      });
-      context += `\n`;
-    }
-
-    // SEC Filings (if available)
-    // API returns: { filings: [...] } - need to access the nested array
-    const filingsList = data.secFilings?.filings || (Array.isArray(data.secFilings) ? data.secFilings : null);
-    if (filingsList && filingsList.length > 0) {
-      context += `**Recent SEC Filings (Last 5)**\n`;
-      filingsList.slice(0, 5).forEach((filing: any) => {
-        const type = filing.type || filing.formType || 'N/A';
-        const date = filing.date || filing.filedAt || filing.epochDate || '';
-        const title = filing.title || filing.description || '';
-        
-        context += `- **${type}**`;
-        if (date) context += ` (${date})`;
-        if (title) context += `: ${title.substring(0, 60)}${title.length > 60 ? '...' : ''}`;
-        context += `\n`;
-      });
-      context += `\n`;
-    }
-
-    // Upcoming Calendar Events (if available)
-    // API returns: { earnings: { earningsDate: [...], earningsAverage: {...}, ... }, dividendDate: {...}, exDividendDate: {...} }
-    if (data.calendarEvents && typeof data.calendarEvents === 'object') {
-      const cal = data.calendarEvents;
-      const hasData = cal.earnings || cal.dividendDate || cal.exDividendDate;
-      
-      if (hasData) {
-        context += `**Upcoming Events & Estimates**\n`;
-        
-        // Earnings date
-        if (cal.earnings?.earningsDate?.[0]) {
-          const earningsDate = cal.earnings.earningsDate[0];
-          const dateStr = earningsDate.fmt || (earningsDate.raw ? new Date(earningsDate.raw * 1000).toLocaleDateString() : null);
-          if (dateStr) context += `- **Next Earnings Date**: ${dateStr}\n`;
-        }
-        
-        // Earnings estimates
-        if (cal.earnings?.earningsAverage?.fmt || cal.earnings?.earningsAverage?.raw) {
-          const avg = cal.earnings.earningsAverage.fmt || `$${safeFixed(cal.earnings.earningsAverage.raw)}`;
-          context += `- **Earnings Estimate (Average)**: ${avg}\n`;
-        }
-        if (cal.earnings?.earningsLow?.fmt && cal.earnings?.earningsHigh?.fmt) {
-          context += `- **Earnings Range**: ${cal.earnings.earningsLow.fmt} - ${cal.earnings.earningsHigh.fmt}\n`;
-        }
-        
-        // Revenue estimates
-        if (cal.earnings?.revenueAverage?.fmt || cal.earnings?.revenueAverage?.raw) {
-          const rev = cal.earnings.revenueAverage.fmt || `$${safeBillion(cal.earnings.revenueAverage.raw)}B`;
-          context += `- **Revenue Estimate (Average)**: ${rev}\n`;
-        }
-        if (cal.earnings?.revenueLow?.fmt && cal.earnings?.revenueHigh?.fmt) {
-          context += `- **Revenue Range**: ${cal.earnings.revenueLow.fmt} - ${cal.earnings.revenueHigh.fmt}\n`;
-        }
-        
-        // Dividend dates
-        if (cal.dividendDate?.fmt || cal.dividendDate?.raw) {
-          const divDate = cal.dividendDate.fmt || (cal.dividendDate.raw ? new Date(cal.dividendDate.raw * 1000).toLocaleDateString() : null);
-          if (divDate) context += `- **Dividend Date**: ${divDate}\n`;
-        }
-        if (cal.exDividendDate?.fmt || cal.exDividendDate?.raw) {
-          const exDate = cal.exDividendDate.fmt || (cal.exDividendDate.raw ? new Date(cal.exDividendDate.raw * 1000).toLocaleDateString() : null);
-          if (exDate) context += `- **Ex-Dividend Date**: ${exDate}\n`;
-        }
-        
-        context += `\n`;
-      }
-    }
-
-    // Net Share Purchase Activity (if available)
-    // API returns: { buyInfoCount: {fmt, raw}, buyInfoShares: {fmt, raw}, sellInfoCount: {fmt, raw}, sellInfoShares: {fmt, raw}, ... }
-    if (data.netSharePurchase) {
-      const activity = data.netSharePurchase;
-      const hasBuyData = activity.buyInfoCount || activity.buyInfoShares;
-      const hasSellData = activity.sellInfoCount || activity.sellInfoShares;
-      
-      if (hasBuyData || hasSellData) {
-        context += `**Insider Net Share Purchase Activity (Last 6 Months)**\n`;
-        
-        if (hasBuyData) {
-          context += `- **Buys**: `;
-          if (activity.buyInfoCount?.fmt) context += `${activity.buyInfoCount.fmt} transactions`;
-          if (activity.buyInfoShares?.fmt) context += `, ${activity.buyInfoShares.fmt} shares`;
-          if (activity.buyPercentInsiderShares?.fmt) context += ` (${activity.buyPercentInsiderShares.fmt} of insider shares)`;
-          context += `\n`;
-        }
-        
-        if (hasSellData) {
-          context += `- **Sells**: `;
-          if (activity.sellInfoCount?.fmt) context += `${activity.sellInfoCount.fmt} transactions`;
-          if (activity.sellInfoShares?.fmt) context += `, ${activity.sellInfoShares.fmt} shares`;
-          if (activity.sellPercentInsiderShares?.fmt) context += ` (${activity.sellPercentInsiderShares.fmt} of insider shares)`;
-          context += `\n`;
-        }
-        
-        // Net totals if available
-        if (activity.netInfoCount?.fmt || activity.netInfoShares?.fmt) {
-          context += `- **Net Activity**: `;
-          if (activity.netInfoCount?.fmt) context += `${activity.netInfoCount.fmt} net transactions`;
-          if (activity.netInfoShares?.fmt) context += `, ${activity.netInfoShares.fmt} net shares`;
-          if (activity.netPercentInsiderShares?.fmt) context += ` (${activity.netPercentInsiderShares.fmt})`;
-          context += `\n`;
-        }
-        
-        context += `\n`;
-      }
-    }
-
-    // Index Trend - Growth Estimates (if available)
-    // API returns: { symbol: 'NVDA', estimates: [{ period: '0q', growth: {fmt, raw}}, ...] }
-    if (data.indexTrend && data.indexTrend.estimates && data.indexTrend.estimates.length > 0) {
-      context += `**Growth Estimates & Index Trend**\n`;
-      if (data.indexTrend.symbol) {
-        context += `Symbol: ${data.indexTrend.symbol}\n`;
-      }
-      
-      data.indexTrend.estimates.forEach((est: any) => {
-        if (est.period && (est.growth?.fmt || est.growth?.raw !== undefined)) {
-          const periodName = est.period === '0q' ? 'Current Quarter' 
-                           : est.period === '+1q' ? 'Next Quarter'
-                           : est.period === '0y' ? 'Current Year'
-                           : est.period === '+1y' ? 'Next Year'
-                           : est.period === '+5y' ? '5 Year'
-                           : est.period === '-5y' ? 'Past 5 Years'
-                           : est.period;
-          const growthValue = est.growth?.fmt || `${safePercent(est.growth?.raw || est.growth)}%`;
-          context += `- **${periodName}**: ${growthValue} growth estimate\n`;
-        }
-      });
-      context += `\n`;
+      const parts = [];
+      if (fd.profitMargins) parts.push(`Profit Margin: ${safePercent(getValue(fd.profitMargins))}%`);
+      if (fd.returnOnEquity) parts.push(`ROE: ${safePercent(getValue(fd.returnOnEquity))}%`);
+      if (fd.targetMeanPrice) parts.push(`Target: $${safeFixed(getValue(fd.targetMeanPrice))}`);
+      if (parts.length > 0) context += `**Financials:** ${parts.join(', ')}\n`;
     }
 
     return context;
@@ -919,6 +581,33 @@ class RAGService {
   }
 
   /**
+   * Helper: Get common companies name-to-symbol mapping
+   * Used by smart priority detection to check if query mentions a company
+   */
+  private getCommonCompaniesMap(): { [key: string]: string } {
+    return {
+      'apple': 'AAPL', 'microsoft': 'MSFT', 'google': 'GOOGL', 'alphabet': 'GOOGL',
+      'amazon': 'AMZN', 'tesla': 'TSLA', 'meta': 'META', 'facebook': 'META',
+      'nvidia': 'NVDA', 'netflix': 'NFLX', 'amd': 'AMD', 'intel': 'INTC',
+      'broadcom': 'AVGO', 'qualcomm': 'QCOM', 'salesforce': 'CRM', 'oracle': 'ORCL',
+      'adobe': 'ADBE', 'cisco': 'CSCO', 'ibm': 'IBM', 'walmart': 'WMT',
+      'costco': 'COST', 'home depot': 'HD', 'target': 'TGT', 'nike': 'NKE',
+      'disney': 'DIS', 'starbucks': 'SBUX', 'mcdonalds': 'MCD', 'chevron': 'CVX',
+      'exxon': 'XOM', 'jpmorgan': 'JPM', 'goldman': 'GS', 'berkshire': 'BRK-B',
+      'visa': 'V', 'mastercard': 'MA', 'palantir': 'PLTR', 'uber': 'UBER',
+      'paypal': 'PYPL', 'square': 'SQ', 'block': 'SQ', 'shopify': 'SHOP',
+      'spotify': 'SPOT', 'zoom': 'ZM', 'snowflake': 'SNOW', 'crowdstrike': 'CRWD',
+      'coinbase': 'COIN', 'robinhood': 'HOOD', 'airbnb': 'ABNB', 'doordash': 'DASH',
+      'rivian': 'RIVN', 'lucid': 'LCID', 'nio': 'NIO', 'boeing': 'BA',
+      'pfizer': 'PFE', 'moderna': 'MRNA', 'johnson': 'JNJ', 'merck': 'MRK',
+      'coca-cola': 'KO', 'coca cola': 'KO', 'pepsi': 'PEP', 'pepsico': 'PEP',
+      'procter': 'PG', 'p&g': 'PG', 'at&t': 'T', 'verizon': 'VZ',
+      'bank of america': 'BAC', 'wells fargo': 'WFC', 'citigroup': 'C',
+      'morgan stanley': 'MS', 'blackrock': 'BLK', 'general electric': 'GE'
+    };
+  }
+
+  /**
    * Get Market Movers (Gainers, Losers, Most Active)
    */
   private async getMarketMoversData(): Promise<string> {
@@ -1073,6 +762,181 @@ class RAGService {
       console.log(`[RAG] Chat history available (${chatHistory.length} chars)`);
     }
 
+    // =========================================================================
+    // SMART PRIORITY DETECTION - Route queries to the right data FIRST
+    // This runs BEFORE chat history company lookup to avoid wrong context
+    // =========================================================================
+
+    // --- PRIORITY 0A: Market Movers (Gainers, Losers, Active, Undervalued) ---
+    const marketMoversKeywords = [
+      'gainer', 'gainers', 'loser', 'losers', 'active', 'actives', 
+      'mover', 'movers', 'winner', 'winners', 'performer', 'performers', 
+      'top stocks', 'hot stocks', 'trending stocks', 'best stocks today',
+      'worst stocks today', 'biggest gain', 'biggest loss', 'biggest drop',
+      'market today', "today's market", "what's hot", "what's up", "what's down",
+      'most traded', 'high volume', 'undervalued', 'cheap stocks', 'value stocks'
+    ];
+    if (marketMoversKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] 🎯 PRIORITY: Market Movers query detected`);
+      reportProgress('Loading market movers...');
+      const moversData = await this.getMarketMoversData();
+      if (moversData) {
+        return `### Today's Market Movers\n\n${moversData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // --- PRIORITY 0B: Market News ---
+    const newsKeywords = [
+      'news', 'headline', 'headlines', 'article', 'articles', 'breaking',
+      'latest news', 'market news', 'stock news', 'financial news',
+      'what happened', "what's happening", 'update', 'updates', 'announcement',
+      'press release', 'media', 'report', 'reports', 'story', 'stories'
+    ];
+    // Exclude company-specific news (e.g., "Tesla news" should go to company context)
+    const isGeneralNewsQuery = newsKeywords.some(k => queryLower.includes(k)) && 
+      !allSymbols.some(s => queryLower.includes(s.toLowerCase())) &&
+      !Object.keys(this.getCommonCompaniesMap()).some(c => queryLower.includes(c));
+    if (isGeneralNewsQuery) {
+      console.log(`[RAG] 🎯 PRIORITY: General News query detected`);
+      reportProgress('Loading market news...');
+      const newsData = await this.getMarketNewsData();
+      if (newsData) {
+        return `### Market News\n\n${newsData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // --- PRIORITY 0C: Earnings Calendar ---
+    const earningsKeywords = [
+      'earnings calendar', 'earnings this week', 'earnings today', 'earnings tomorrow',
+      'who reports', 'reporting earnings', 'earnings season', 'quarterly reports',
+      'upcoming earnings', 'next earnings', 'earnings schedule', 'earnings dates',
+      'when does.*report', 'companies reporting'
+    ];
+    if (earningsKeywords.some(k => queryLower.includes(k) || new RegExp(k).test(queryLower))) {
+      console.log(`[RAG] 🎯 PRIORITY: Earnings Calendar query detected`);
+      reportProgress('Loading earnings calendar...');
+      const earningsData = await this.getEarningsCalendarData();
+      if (earningsData) {
+        return `### Earnings Calendar\n\n${earningsData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // --- PRIORITY 0D: Dividends Calendar ---
+    const dividendKeywords = [
+      'dividend calendar', 'dividends this week', 'dividends today', 'upcoming dividends',
+      'dividend schedule', 'ex-dividend', 'ex dividend', 'dividend dates', 'dividend payout',
+      'who pays dividend', 'dividend stocks', 'high dividend', 'best dividend',
+      'dividend yield stocks', 'income stocks', 'dividend aristocrat'
+    ];
+    if (dividendKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] 🎯 PRIORITY: Dividends Calendar query detected`);
+      reportProgress('Loading dividend calendar...');
+      const calendarData = await this.getMarketCalendarData();
+      if (calendarData) {
+        return `### Dividend & Market Calendar\n\n${calendarData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // --- PRIORITY 0E: IPO Calendar ---
+    const ipoKeywords = [
+      'ipo', 'ipos', 'initial public offering', 'going public', 'new listing',
+      'upcoming ipo', 'ipo calendar', 'ipo this week', 'ipo schedule',
+      'recent ipo', 'new stocks', 'newly listed', 'ipo market', 'hot ipo'
+    ];
+    if (ipoKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] 🎯 PRIORITY: IPO Calendar query detected`);
+      reportProgress('Loading IPO calendar...');
+      const calendarData = await this.getMarketCalendarData();
+      if (calendarData) {
+        return `### IPO & Market Calendar\n\n${calendarData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // --- PRIORITY 0F: Stock Splits ---
+    const splitKeywords = [
+      'stock split', 'stock splits', 'split calendar', 'upcoming split',
+      'reverse split', 'split ratio', 'split date', 'who is splitting',
+      'recent splits', 'split announcement'
+    ];
+    if (splitKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] 🎯 PRIORITY: Stock Splits query detected`);
+      reportProgress('Loading splits calendar...');
+      const calendarData = await this.getMarketCalendarData();
+      if (calendarData) {
+        return `### Stock Splits & Calendar\n\n${calendarData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // --- PRIORITY 0G: Economic Events (Fed, GDP, CPI, Jobs) ---
+    const economicKeywords = [
+      'fed', 'federal reserve', 'fomc', 'interest rate', 'rate hike', 'rate cut',
+      'gdp', 'gross domestic product', 'economic growth', 'recession',
+      'cpi', 'inflation', 'consumer price', 'ppi', 'producer price',
+      'jobs report', 'unemployment', 'nonfarm', 'payroll', 'jobless claims',
+      'economic calendar', 'economic events', 'economic data', 'macro',
+      'treasury', 'bond yield', 'yield curve', 'economic outlook',
+      'retail sales', 'consumer confidence', 'housing', 'manufacturing'
+    ];
+    if (economicKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] 🎯 PRIORITY: Economic Events query detected`);
+      reportProgress('Loading economic calendar...');
+      const economicData = await this.getEconomicEventsData();
+      if (economicData) {
+        return `### Economic Events & Calendar\n\n${economicData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // --- PRIORITY 0H: Public Offerings (Secondary offerings, follow-ons) ---
+    const offeringKeywords = [
+      'public offering', 'secondary offering', 'follow-on offering', 'stock offering',
+      'share offering', 'equity offering', 'shelf offering', 'dilution',
+      'raising capital', 'capital raise', 'new shares'
+    ];
+    if (offeringKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] 🎯 PRIORITY: Public Offerings query detected`);
+      reportProgress('Loading offerings calendar...');
+      const calendarData = await this.getMarketCalendarData();
+      if (calendarData) {
+        return `### Public Offerings & Calendar\n\n${calendarData}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // --- PRIORITY 0I: General Market Overview ---
+    const marketOverviewKeywords = [
+      'market overview', 'market summary', 'how is the market', "how's the market",
+      'market status', 'market performance', 'stock market today', 'wall street',
+      'market open', 'market close', 'premarket', 'after hours', 'futures',
+      's&p', 'dow jones', 'nasdaq', 'russell', 'market index', 'indices'
+    ];
+    if (marketOverviewKeywords.some(k => queryLower.includes(k))) {
+      console.log(`[RAG] 🎯 PRIORITY: Market Overview query detected`);
+      reportProgress('Building market overview...');
+      const overviewContext = await this.buildMarketContext();
+      if (overviewContext) {
+        return `### Market Overview\n\n${overviewContext}\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
+    // --- PRIORITY 0J: Technical Analysis (when not company-specific) ---
+    const technicalKeywords = [
+      'rsi overbought', 'rsi oversold', 'macd signal', 'macd crossover',
+      'golden cross', 'death cross', 'technical analysis', 'chart pattern',
+      'support level', 'resistance level', 'breakout', 'breakdown',
+      'moving average', 'bollinger', 'fibonacci', 'trend line'
+    ];
+    const isGeneralTechnicalQuery = technicalKeywords.some(k => queryLower.includes(k)) &&
+      !allSymbols.some(s => queryLower.includes(s.toLowerCase())) &&
+      !Object.keys(this.getCommonCompaniesMap()).some(c => queryLower.includes(c));
+    if (isGeneralTechnicalQuery) {
+      console.log(`[RAG] 🎯 PRIORITY: General Technical Analysis query detected`);
+      reportProgress('Loading market analysis...');
+      // For general technical queries, provide market movers + context
+      const moversData = await this.getMarketMoversData();
+      if (moversData) {
+        return `### Market Technical Overview\n\n${moversData}\n\n*For specific technical analysis, please mention a stock symbol or company name.*\n\nThe user asked: "${cleanQuery}"`;
+      }
+    }
+
     // Common English words that happen to be stock symbols - SKIP these in direct matching
     const commonEnglishWords = new Set([
       'YOU', 'IT', 'AT', 'BE', 'SO', 'DO', 'GO', 'IS', 'AS', 'OR', 'AN', 'AM', 'ON', 'IN', 
@@ -1136,7 +1000,261 @@ class RAGService {
       const regex = new RegExp(`\\b${word}\\b`, 'i');
       return regex.test(text);
     };
-    
+
+    // =========================================================================
+    // PRIORITY 1: Check if CURRENT QUERY mentions a company (takes precedence!)
+    // This ensures "Tell me about Nvidia" returns NVDA, not a company from history
+    // =========================================================================
+    // Full S&P 500 company name to symbol mapping (~500 companies)
+    const queryCompanyMap: { [key: string]: string } = {
+      // === TECHNOLOGY (Information Technology) ===
+      'apple': 'AAPL', 'microsoft': 'MSFT', 'nvidia': 'NVDA', 'broadcom': 'AVGO',
+      'oracle': 'ORCL', 'salesforce': 'CRM', 'adobe': 'ADBE', 'amd': 'AMD',
+      'advanced micro': 'AMD', 'cisco': 'CSCO', 'accenture': 'ACN', 'intuit': 'INTU',
+      'ibm': 'IBM', 'texas instruments': 'TXN', 'qualcomm': 'QCOM', 'applied materials': 'AMAT',
+      'servicenow': 'NOW', 'intel': 'INTC', 'lam research': 'LRCX', 'analog devices': 'ADI',
+      'synopsys': 'SNPS', 'klac': 'KLAC', 'kla': 'KLAC', 'cadence': 'CDNS',
+      'autodesk': 'ADSK', 'palo alto': 'PANW', 'palo alto networks': 'PANW',
+      'microchip': 'MCHP', 'marvell': 'MRVL', 'fortinet': 'FTNT', 'crowdstrike': 'CRWD',
+      'arista': 'ANET', 'arista networks': 'ANET', 'nxp': 'NXPI', 'nxp semiconductors': 'NXPI',
+      'motorola': 'MSI', 'motorola solutions': 'MSI', 'te connectivity': 'TEL',
+      'amphenol': 'APH', 'keysight': 'KEYS', 'ansys': 'ANSS', 'gartner': 'IT',
+      'ptc': 'PTC', 'hewlett packard enterprise': 'HPE', 'hpe': 'HPE',
+      'hp': 'HPQ', 'hp inc': 'HPQ', 'western digital': 'WDC', 'seagate': 'STX',
+      'netapp': 'NTAP', 'juniper': 'JNPR', 'juniper networks': 'JNPR',
+      'ceridian': 'CDAY', 'paycom': 'PAYC', 'tyler': 'TYL', 'tyler technologies': 'TYL',
+      'akamai': 'AKAM', 'f5': 'FFIV', 'f5 networks': 'FFIV', 'epam': 'EPAM',
+      'teradyne': 'TER', 'trimble': 'TRMB', 'cognizant': 'CTSH',
+      'gen digital': 'GEN', 'fair isaac': 'FICO', 'fico': 'FICO',
+      
+      // === COMMUNICATION SERVICES ===
+      'google': 'GOOGL', 'alphabet': 'GOOGL', 'meta': 'META', 'facebook': 'META',
+      'netflix': 'NFLX', 'disney': 'DIS', 'walt disney': 'DIS', 'comcast': 'CMCSA',
+      'verizon': 'VZ', 't-mobile': 'TMUS', 'at&t': 'T', 'att': 'T',
+      'charter': 'CHTR', 'charter communications': 'CHTR', 'activision': 'ATVI',
+      'activision blizzard': 'ATVI', 'electronic arts': 'EA', 'ea': 'EA',
+      'take-two': 'TTWO', 'take two': 'TTWO', 'warner bros': 'WBD', 'warner brothers': 'WBD',
+      'paramount': 'PARA', 'paramount global': 'PARA', 'fox': 'FOXA', 'fox corporation': 'FOXA',
+      'live nation': 'LYV', 'omnicom': 'OMC', 'interpublic': 'IPG', 'news corp': 'NWSA',
+      'match': 'MTCH', 'match group': 'MTCH', 'pinterest': 'PINS',
+      
+      // === CONSUMER DISCRETIONARY ===
+      'amazon': 'AMZN', 'tesla': 'TSLA', 'home depot': 'HD', 'mcdonalds': 'MCD',
+      "mcdonald's": 'MCD', 'nike': 'NKE', 'lowes': 'LOW', "lowe's": 'LOW',
+      'booking': 'BKNG', 'booking holdings': 'BKNG', 'starbucks': 'SBUX',
+      'tjx': 'TJX', 'tj maxx': 'TJX', 'marshalls': 'TJX', 'target': 'TGT',
+      'ross stores': 'ROST', 'ross': 'ROST', 'chipotle': 'CMG', 'chipotle mexican': 'CMG',
+      'general motors': 'GM', 'gm': 'GM', 'ford': 'F', 'ford motor': 'F',
+      'marriott': 'MAR', 'marriott international': 'MAR', 'hilton': 'HLT',
+      'oreilley': 'ORLY', "o'reilly": 'ORLY', 'o reilly': 'ORLY', 'autozone': 'AZO',
+      'yum brands': 'YUM', 'yum': 'YUM', 'aptiv': 'APTV', 'ebay': 'EBAY',
+      'las vegas sands': 'LVS', 'royal caribbean': 'RCL', 'carnival': 'CCL',
+      'norwegian cruise': 'NCLH', 'darden': 'DRI', 'darden restaurants': 'DRI',
+      'dominos': 'DPZ', "domino's": 'DPZ', 'wynn': 'WYNN', 'wynn resorts': 'WYNN',
+      'mgm': 'MGM', 'mgm resorts': 'MGM', 'caesars': 'CZR', 'caesars entertainment': 'CZR',
+      'expedia': 'EXPE', 'etsy': 'ETSY', 'bath body works': 'BBWI',
+      'best buy': 'BBY', 'ulta': 'ULTA', 'ulta beauty': 'ULTA', 'garmin': 'GRMN',
+      'hasbro': 'HAS', 'pool': 'POOL', 'pool corporation': 'POOL', 'tractor supply': 'TSCO',
+      'pulte': 'PHM', 'pultegroup': 'PHM', 'lennar': 'LEN', 'dr horton': 'DHI',
+      'd.r. horton': 'DHI', 'nv homes': 'NVR', 'nvr': 'NVR', 'mohawk': 'MHK',
+      'whirlpool': 'WHR', 'leggett platt': 'LEG', 'tapestry': 'TPR', 'ralph lauren': 'RL',
+      'pvh': 'PVH', 'vf corporation': 'VFC', 'vf corp': 'VFC', 'capri': 'CPRI',
+      'nordstrom': 'JWN', 'gap': 'GPS', 'penn entertainment': 'PENN', 'draft kings': 'DKNG',
+      
+      // === CONSUMER STAPLES ===
+      'walmart': 'WMT', 'procter': 'PG', 'procter & gamble': 'PG', 'p&g': 'PG',
+      'costco': 'COST', 'coca-cola': 'KO', 'coca cola': 'KO', 'coke': 'KO',
+      'pepsi': 'PEP', 'pepsico': 'PEP', 'philip morris': 'PM', 'mondelez': 'MDLZ',
+      'altria': 'MO', 'colgate': 'CL', 'colgate palmolive': 'CL', 'general mills': 'GIS',
+      'kellogg': 'K', 'kelloggs': 'K', 'kraft heinz': 'KHC', 'kraft': 'KHC', 'heinz': 'KHC',
+      'estee lauder': 'EL', 'hershey': 'HSY', 'hersheys': 'HSY', 'sysco': 'SYY',
+      'kroger': 'KR', 'walgreens': 'WBA', 'constellation brands': 'STZ',
+      'molson coors': 'TAP', 'brown forman': 'BF-B', 'jack daniels': 'BF-B',
+      'tyson': 'TSN', 'tyson foods': 'TSN', 'hormel': 'HRL', 'hormel foods': 'HRL',
+      'mccormick': 'MKC', 'jm smucker': 'SJM', 'smuckers': 'SJM', 'campbell': 'CPB',
+      'campbells': 'CPB', 'kimberly clark': 'KMB', 'church dwight': 'CHD',
+      'clorox': 'CLX', 'conagra': 'CAG', 'conagra brands': 'CAG', 'lamb weston': 'LW',
+      'archer daniels': 'ADM', 'adm': 'ADM', 'bunge': 'BG',
+      
+      // === HEALTHCARE ===
+      'unitedhealth': 'UNH', 'united health': 'UNH', 'eli lilly': 'LLY', 'lilly': 'LLY',
+      'johnson': 'JNJ', 'johnson & johnson': 'JNJ', 'j&j': 'JNJ', 'merck': 'MRK',
+      'abbvie': 'ABBV', 'pfizer': 'PFE', 'thermo fisher': 'TMO', 'abbott': 'ABT',
+      'abbott labs': 'ABT', 'danaher': 'DHR', 'amgen': 'AMGN', 'bristol-myers': 'BMY',
+      'bristol myers': 'BMY', 'bristol myers squibb': 'BMY', 'astrazeneca': 'AZN',
+      'intuitive surgical': 'ISRG', 'gilead': 'GILD', 'gilead sciences': 'GILD',
+      'regeneron': 'REGN', 'vertex': 'VRTX', 'vertex pharmaceuticals': 'VRTX',
+      'boston scientific': 'BSX', 'becton dickinson': 'BDX', 'bd': 'BDX',
+      'stryker': 'SYK', 'cigna': 'CI', 'elevance': 'ELV', 'elevance health': 'ELV',
+      'anthem': 'ELV', 'centene': 'CNC', 'hca': 'HCA', 'hca healthcare': 'HCA',
+      'mckesson': 'MCK', 'cardinal health': 'CAH', 'amerisource': 'ABC',
+      'amerisourcebergen': 'ABC', 'cencora': 'COR', 'cvs': 'CVS', 'cvs health': 'CVS',
+      'humana': 'HUM', 'molina': 'MOH', 'molina healthcare': 'MOH',
+      'zimmer biomet': 'ZBH', 'zimmer': 'ZBH', 'edwards lifesciences': 'EW',
+      'idexx': 'IDXX', 'idexx labs': 'IDXX', 'medtronic': 'MDT', 'baxter': 'BAX',
+      'biogen': 'BIIB', 'illumina': 'ILMN', 'agilent': 'A', 'agilent technologies': 'A',
+      'waters': 'WAT', 'waters corporation': 'WAT', 'mettler toledo': 'MTD',
+      'west pharmaceutical': 'WST', 'dexcom': 'DXCM', 'align': 'ALGN', 'align technology': 'ALGN',
+      'resmed': 'RMD', 'teleflex': 'TFX', 'steris': 'STE', 'labcorp': 'LH',
+      'quest diagnostics': 'DGX', 'quest': 'DGX', 'organon': 'OGN',
+      'viatris': 'VTRS', 'catalent': 'CTLT', 'bio-rad': 'BIO', 'bio rad': 'BIO',
+      'incyte': 'INCY', 'iqvia': 'IQV', 'charles river': 'CRL',
+      'revvity': 'RVTY', 'perkin elmer': 'RVTY',
+      
+      // === FINANCIALS ===
+      'berkshire': 'BRK-B', 'berkshire hathaway': 'BRK-B', 'jpmorgan': 'JPM',
+      'jp morgan': 'JPM', 'chase': 'JPM', 'visa': 'V', 'mastercard': 'MA',
+      'bank of america': 'BAC', 'bofa': 'BAC', 'wells fargo': 'WFC',
+      'morgan stanley': 'MS', 'goldman': 'GS', 'goldman sachs': 'GS',
+      'charles schwab': 'SCHW', 'schwab': 'SCHW', 'blackrock': 'BLK',
+      'american express': 'AXP', 'amex': 'AXP', 'citigroup': 'C', 'citi': 'C',
+      's&p global': 'SPGI', 'sp global': 'SPGI', 'cme group': 'CME', 'cme': 'CME',
+      'intercontinental exchange': 'ICE', 'ice': 'ICE', 'progressive': 'PGR',
+      'marsh mclennan': 'MMC', 'marsh': 'MMC', 'aon': 'AON', 'pnc': 'PNC',
+      'pnc financial': 'PNC', 'u.s. bancorp': 'USB', 'us bancorp': 'USB', 'us bank': 'USB',
+      'truist': 'TFC', 'truist financial': 'TFC', 'travelers': 'TRV',
+      'metlife': 'MET', 'aflac': 'AFL', 'prudential': 'PRU', 'prudential financial': 'PRU',
+      'allstate': 'ALL', 'hartford': 'HIG', 'the hartford': 'HIG',
+      'capital one': 'COF', 'discover': 'DFS', 'discover financial': 'DFS',
+      'american international': 'AIG', 'aig': 'AIG', 'chubb': 'CB',
+      'state street': 'STT', 'northern trust': 'NTRS', 'bny mellon': 'BK',
+      'bank of new york': 'BK', 'blackstone': 'BX', 'kkr': 'KKR',
+      'apollo': 'APO', 'apollo global': 'APO', 'carlyle': 'CG', 'carlyle group': 'CG',
+      't. rowe price': 't rowe price', 'franklin templeton': 'BEN',
+      'raymond james': 'RJF', 'lpl financial': 'LPLA', 'nasdaq': 'NDAQ',
+      'cboe': 'CBOE', 'msci': 'MSCI', 'moodys': 'MCO', "moody's": 'MCO',
+      'markel': 'MKL', 'cincinnati financial': 'CINF', 'globe life': 'GL',
+      'w.r. berkley': 'WRB', 'wr berkley': 'WRB', 'everest': 'EG', 'renaissancere': 'RNR',
+      'arch capital': 'ACGL', 'principal': 'PFG', 'principal financial': 'PFG',
+      'lincoln national': 'LNC', 'unum': 'UNM', 'invesco': 'IVZ',
+      'synchrony': 'SYF', 'synchrony financial': 'SYF', 'ally financial': 'ALLY', 'ally': 'ALLY',
+      'fifth third': 'FITB', 'fifth third bank': 'FITB', 'regions': 'RF', 'regions financial': 'RF',
+      'citizens': 'CFG', 'citizens financial': 'CFG', 'keycorp': 'KEY', 'key bank': 'KEY',
+      'huntington': 'HBAN', 'huntington bank': 'HBAN', 'm&t bank': 'MTB', 'm&t': 'MTB',
+      'comerica': 'CMA', 'zions': 'ZION', 'zions bancorp': 'ZION',
+      'factset': 'FDS', 'ameriprise': 'AMP',
+      
+      // === INDUSTRIALS ===
+      'raytheon': 'RTX', 'rtx': 'RTX', 'caterpillar': 'CAT', 'boeing': 'BA',
+      'honeywell': 'HON', 'union pacific': 'UNP', 'ge aerospace': 'GE',
+      'general electric': 'GE', 'ge': 'GE', 'lockheed': 'LMT', 'lockheed martin': 'LMT',
+      'ups': 'UPS', 'united parcel': 'UPS', 'deere': 'DE', 'john deere': 'DE',
+      'eaton': 'ETN', '3m': 'MMM', 'northrop grumman': 'NOC', 'northrop': 'NOC',
+      'csx': 'CSX', 'norfolk southern': 'NSC', 'general dynamics': 'GD',
+      'illinois tool works': 'ITW', 'itw': 'ITW', 'parker hannifin': 'PH',
+      'fedex': 'FDX', 'federal express': 'FDX', 'emerson': 'EMR', 'emerson electric': 'EMR',
+      'waste management': 'WM', 'republic services': 'RSG', 'johnson controls': 'JCI',
+      'paccar': 'PCAR', 'cummins': 'CMI', 'rockwell': 'ROK', 'rockwell automation': 'ROK',
+      'otis': 'OTIS', 'otis elevator': 'OTIS', 'carrier': 'CARR', 'carrier global': 'CARR',
+      'trane': 'TT', 'trane technologies': 'TT', 'dover': 'DOV',
+      'stanley black decker': 'SWK', 'stanley': 'SWK', 'snap-on': 'SNA', 'snap on': 'SNA',
+      'xylem': 'XYL', 'fortive': 'FTV', 'ametek': 'AME', 'idex': 'IEX',
+      'graco': 'GGG', 'nordson': 'NDSN', 'lincoln electric': 'LECO',
+      'flowserve': 'FLS', 'pentair': 'PNR', 'hubbell': 'HUBB',
+      'ww grainger': 'GWW', 'grainger': 'GWW', 'fastenal': 'FAST',
+      'cintas': 'CTAS', 'copart': 'CPRT', 'verisign': 'VRSN', 'rollins': 'ROL',
+      'expeditors': 'EXPD', 'ch robinson': 'CHRW', 'jb hunt': 'JBHT',
+      'old dominion': 'ODFL', 'old dominion freight': 'ODFL', 'transdigm': 'TDG',
+      'howmet': 'HWM', 'howmet aerospace': 'HWM', 'textron': 'TXT',
+      'l3harris': 'LHX', 'l3 harris': 'LHX', 'leidos': 'LDOS',
+      'generac': 'GNRC', 'ingersoll rand': 'IR', 'westinghouse': 'WAB',
+      'wabtec': 'WAB', 'southwest airlines': 'LUV', 'southwest': 'LUV',
+      'delta': 'DAL', 'delta airlines': 'DAL', 'united airlines': 'UAL',
+      'american airlines': 'AAL', 'alaska air': 'ALK',
+      
+      // === ENERGY ===
+      'exxon': 'XOM', 'exxon mobil': 'XOM', 'exxonmobil': 'XOM', 'chevron': 'CVX',
+      'conocophillips': 'COP', 'conoco phillips': 'COP', 'conoco': 'COP',
+      'eog': 'EOG', 'eog resources': 'EOG', 'schlumberger': 'SLB', 'slb': 'SLB',
+      'pioneer': 'PXD', 'pioneer natural': 'PXD', 'marathon petroleum': 'MPC',
+      'phillips 66': 'PSX', 'valero': 'VLO', 'valero energy': 'VLO',
+      'occidental': 'OXY', 'occidental petroleum': 'OXY', 'hess': 'HES',
+      'williams': 'WMB', 'williams companies': 'WMB', 'kinder morgan': 'KMI',
+      'oneok': 'OKE', 'devon': 'DVN', 'devon energy': 'DVN',
+      'diamondback': 'FANG', 'diamondback energy': 'FANG', 'coterra': 'CTRA',
+      'coterra energy': 'CTRA', 'marathon oil': 'MRO', 'apa': 'APA', 'apache': 'APA',
+      'baker hughes': 'BKR', 'halliburton': 'HAL', 'targa': 'TRGP', 'targa resources': 'TRGP',
+      
+      // === UTILITIES ===
+      'nextera': 'NEE', 'nextera energy': 'NEE', 'fpl': 'NEE',
+      'duke energy': 'DUK', 'duke': 'DUK', 'southern company': 'SO', 'southern': 'SO',
+      'dominion': 'D', 'dominion energy': 'D', 'american electric': 'AEP', 'aep': 'AEP',
+      'exelon': 'EXC', 'sempra': 'SRE', 'sempra energy': 'SRE',
+      'xcel': 'XEL', 'xcel energy': 'XEL', 'public service': 'PEG',
+      'pseg': 'PEG', 'consolidated edison': 'ED', 'con edison': 'ED', 'con ed': 'ED',
+      'wec energy': 'WEC', 'wec': 'WEC', 'eversource': 'ES', 'eversource energy': 'ES',
+      'entergy': 'ETR', 'dte energy': 'DTE', 'dte': 'DTE', 'centerpoint': 'CNP',
+      'centerpoint energy': 'CNP', 'ameren': 'AEE', 'cms energy': 'CMS', 'cms': 'CMS',
+      'atmos energy': 'ATO', 'atmos': 'ATO', 'firstenergy': 'FE', 'first energy': 'FE',
+      'edison international': 'EIX', 'ppl': 'PPL', 'ppl corporation': 'PPL',
+      'alliant energy': 'LNT', 'evergy': 'EVRG', 'nrg': 'NRG', 'nrg energy': 'NRG',
+      'aes': 'AES', 'aes corporation': 'AES', 'pinnacle west': 'PNW',
+      'american water': 'AWK', 'american water works': 'AWK',
+      
+      // === MATERIALS ===
+      'linde': 'LIN', 'sherwin williams': 'SHW', 'sherwin-williams': 'SHW',
+      'air products': 'APD', 'freeport': 'FCX', 'freeport mcmoran': 'FCX',
+      'newmont': 'NEM', 'newmont mining': 'NEM', 'nucor': 'NUE',
+      'ecolab': 'ECL', 'dow': 'DOW', 'dow chemical': 'DOW', 'dupont': 'DD',
+      'corteva': 'CTVA', 'ppg': 'PPG', 'ppg industries': 'PPG',
+      'martin marietta': 'MLM', 'vulcan': 'VMC', 'vulcan materials': 'VMC',
+      'ball': 'BALL', 'ball corporation': 'BALL', 'packaging corp': 'PKG',
+      'international paper': 'IP', 'westrock': 'WRK', 'avery dennison': 'AVY',
+      'celanese': 'CE', 'eastman': 'EMN', 'eastman chemical': 'EMN',
+      'cf industries': 'CF', 'mosaic': 'MOS', 'mosaic company': 'MOS',
+      'fmc': 'FMC', 'fmc corporation': 'FMC', 'albemarle': 'ALB',
+      'international flavors': 'IFF', 'iff': 'IFF', 'steel dynamics': 'STLD',
+      'cleveland cliffs': 'CLF', 'cliffs': 'CLF',
+      
+      // === REAL ESTATE ===
+      'prologis': 'PLD', 'american tower': 'AMT', 'equinix': 'EQIX',
+      'crown castle': 'CCI', 'public storage': 'PSA', 'realty income': 'O',
+      'digital realty': 'DLR', 'simon property': 'SPG', 'simon': 'SPG',
+      'welltower': 'WELL', 'cbre': 'CBRE', 'cbre group': 'CBRE',
+      'ventas': 'VTR', 'avalonbay': 'AVB', 'equity residential': 'EQR',
+      'alexandria': 'ARE', 'alexandria real estate': 'ARE', 'healthpeak': 'PEAK',
+      'extra space': 'EXR', 'extra space storage': 'EXR', 'kimco': 'KIM', 'kimco realty': 'KIM',
+      'mid-america': 'MAA', 'mid america': 'MAA', 'essex': 'ESS', 'essex property': 'ESS',
+      'iron mountain': 'IRM', 'udr': 'UDR', 'camden': 'CPT', 'camden property': 'CPT',
+      'regency centers': 'REG', 'federal realty': 'FRT', 'host hotels': 'HST',
+      'vornado': 'VNO', 'vornado realty': 'VNO', 'boston properties': 'BXP',
+      'sl green': 'SLG', 'duke realty': 'DRE',
+      
+      // === POPULAR NON-S&P 500 (User Requests) ===
+      'palantir': 'PLTR', 'uber': 'UBER', 'lyft': 'LYFT', 'square': 'SQ', 'block': 'SQ',
+      'shopify': 'SHOP', 'spotify': 'SPOT', 'zoom': 'ZM', 'snowflake': 'SNOW',
+      'datadog': 'DDOG', 'mongodb': 'MDB', 'twilio': 'TWLO', 'okta': 'OKTA',
+      'coinbase': 'COIN', 'robinhood': 'HOOD', 'doordash': 'DASH',
+      'rivian': 'RIVN', 'lucid': 'LCID', 'nio': 'NIO', 'xpeng': 'XPEV', 'li auto': 'LI',
+      'baba': 'BABA', 'alibaba': 'BABA', 'bidu': 'BIDU', 'baidu': 'BIDU',
+      'jd': 'JD', 'jd.com': 'JD', 'pinduoduo': 'PDD', 'pdd': 'PDD',
+      'tencent': 'TCEHY', 'temu': 'PDD', 'bytedance': 'BDNCE', 'tiktok': 'BDNCE',
+      'samsung': 'SSNLF', 'sony': 'SONY', 'nintendo': 'NTDOY', 'arm': 'ARM',
+      'asml': 'ASML', 'tsmc': 'TSM', 'taiwan semi': 'TSM'
+    };
+
+    // Check if current query mentions a company name
+    for (const [companyName, symbol] of Object.entries(queryCompanyMap)) {
+      if (isStandaloneWord(queryLower, companyName) && allSymbols.includes(symbol)) {
+        console.log(`[RAG] 🎯 PRIORITY: Found "${companyName}" (${symbol}) in CURRENT QUERY`);
+        reportProgress('Looking up ' + companyName + '...', symbol);
+        return await this.buildCompanyContext(symbol, buildContextProgress);
+      }
+    }
+
+    // Also check for direct symbol mentions in query (e.g., "NVDA", "TSLA")
+    for (const sym of allSymbols) {
+      if (sym.length >= 2 && isStandaloneWord(cleanQuery.toUpperCase(), sym) && !commonEnglishWords.has(sym)) {
+        console.log(`[RAG] 🎯 PRIORITY: Found symbol ${sym} in CURRENT QUERY`);
+        reportProgress('Looking up ' + sym + '...');
+        return await this.buildCompanyContext(sym, buildContextProgress);
+      }
+    }
+
+    // =========================================================================
+    // PRIORITY 2: Chat history for FOLLOW-UP questions only
+    // Only used when current query doesn't mention a specific company
+    // =========================================================================
     if (chatHistory && chatHistory.trim()) {
       const historyLower = chatHistory.toLowerCase();
       
@@ -1147,32 +1265,8 @@ class RAGService {
       
       // PRIORITY: Check for company names FIRST (more reliable than short symbols)
       // This prevents "AR" matching inside "market" before "Tesla" is found
-      const historyCompanyMap: { [key: string]: string } = {
-        'apple': 'AAPL', 'microsoft': 'MSFT', 'google': 'GOOGL', 'alphabet': 'GOOGL',
-        'amazon': 'AMZN', 'tesla': 'TSLA', 'meta': 'META', 'facebook': 'META',
-        'nvidia': 'NVDA', 'netflix': 'NFLX', 'amd': 'AMD', 'intel': 'INTC',
-        'broadcom': 'AVGO', 'qualcomm': 'QCOM', 'salesforce': 'CRM', 'oracle': 'ORCL',
-        'adobe': 'ADBE', 'cisco': 'CSCO', 'ibm': 'IBM', 'walmart': 'WMT',
-        'costco': 'COST', 'home depot': 'HD', 'target': 'TGT', 'nike': 'NKE',
-        'disney': 'DIS', 'starbucks': 'SBUX', 'mcdonalds': 'MCD', 'chevron': 'CVX',
-        'exxon': 'XOM', 'jpmorgan': 'JPM', 'goldman': 'GS', 'berkshire': 'BRK-B',
-        'visa': 'V', 'mastercard': 'MA', 'palantir': 'PLTR', 'uber': 'UBER', 'lyft': 'LYFT',
-        'paypal': 'PYPL', 'square': 'SQ', 'block': 'SQ', 'shopify': 'SHOP',
-        'spotify': 'SPOT', 'zoom': 'ZM', 'snowflake': 'SNOW', 'crowdstrike': 'CRWD',
-        'datadog': 'DDOG', 'mongodb': 'MDB', 'twilio': 'TWLO', 'okta': 'OKTA',
-        'coinbase': 'COIN', 'robinhood': 'HOOD', 'airbnb': 'ABNB', 'doordash': 'DASH',
-        'rivian': 'RIVN', 'lucid': 'LCID', 'nio': 'NIO', 'xpeng': 'XPEV', 'li auto': 'LI',
-        'boeing': 'BA', 'lockheed': 'LMT', 'raytheon': 'RTX', 'northrop': 'NOC',
-        'pfizer': 'PFE', 'moderna': 'MRNA', 'johnson': 'JNJ', 'merck': 'MRK', 'abbvie': 'ABBV',
-        'unitedhealth': 'UNH', 'cigna': 'CI', 'humana': 'HUM', 'cvs': 'CVS',
-        'coca-cola': 'KO', 'coca cola': 'KO', 'pepsi': 'PEP', 'pepsico': 'PEP',
-        'procter': 'PG', 'p&g': 'PG', 'colgate': 'CL', 'unilever': 'UL',
-        'at&t': 'T', 'verizon': 'VZ', 't-mobile': 'TMUS', 'comcast': 'CMCSA',
-        'bank of america': 'BAC', 'wells fargo': 'WFC', 'citigroup': 'C', 'citi': 'C',
-        'morgan stanley': 'MS', 'charles schwab': 'SCHW', 'blackrock': 'BLK',
-        'caterpillar': 'CAT', 'deere': 'DE', 'john deere': 'DE', '3m': 'MMM',
-        'honeywell': 'HON', 'general electric': 'GE', 'ge': 'GE', 'siemens': 'SIEGY'
-      };
+      // Use same comprehensive S&P 500 map for chat history detection
+      const historyCompanyMap = queryCompanyMap;
       
       // Check company names first (more reliable than short symbols)
       for (const [companyName, symbol] of Object.entries(historyCompanyMap)) {
@@ -1431,36 +1525,8 @@ class RAGService {
       }
     }
 
-    // 5. News-specific queries
-    const newsKeywords = ['news', 'headline', 'article', 'latest', 'breaking', 'update'];
-    if (newsKeywords.some(k => queryLower.includes(k))) {
-      console.log(`[RAG] Detected news query`);
-      const newsData = await this.getMarketNewsData();
-      if (newsData) {
-        return `### Market News\n\n${newsData}\n\nThe user asked: "${cleanQuery}"`;
-      }
-    }
-
-    // 6. Earnings/Calendar queries
-    const earningsKeywords = ['earnings', 'report', 'announcement', 'calendar', 'upcoming'];
-    if (earningsKeywords.some(k => queryLower.includes(k))) {
-      console.log(`[RAG] Detected earnings query`);
-      const earningsData = await this.getEarningsCalendarData();
-      if (earningsData) {
-        return `### Earnings Calendar\n\n${earningsData}\n\nThe user asked: "${cleanQuery}"`;
-      }
-    }
-
-    // 7. Market Movers queries (gainers, losers, active)
-    const moversKeywords = ['gainer', 'loser', 'active', 'mover', 'winner', 'performer'];
-    if (moversKeywords.some(k => queryLower.includes(k))) {
-      console.log(`[RAG] Detected market movers query`);
-      reportProgress('Loading market movers...');
-      const moversData = await this.getMarketMoversData();
-      if (moversData) {
-        return `### Market Movers\n\n${moversData}\n\nThe user asked: "${cleanQuery}"`;
-      }
-    }
+    // 5-7. (MOVED TO SMART PRIORITY DETECTION at start of function)
+    // News, Earnings, Market Movers are now detected BEFORE chat history lookup
 
     // 8. Multiple symbols mentioned - Comparison (only match WHOLE words, not substrings)
     // Use word boundary regex to avoid matching "perForming" as F, "stocK" as K, etc.
@@ -1564,17 +1630,15 @@ class RAGService {
     // ChatML format for LFM2-1.2B-RAG (optimized for document-based Q&A)
     // System prompt explains the context structure
     const prompt = `<|startoftext|><|im_start|>system
-You are FinAI, a helpful financial analyst. Date: ${date}.
+You are a friendly financial assistant.
 
-RESPONSE RULES:
-- Be BRIEF and conversational. 2-4 sentences for simple questions, max 6-8 for complex analysis.
-- Do NOT list or repeat all the financial data back to the user - they can see it on screen.
-- Do NOT start with titles or headers.
-- Answer the specific question asked, nothing more.
-- Use **bold** only for 2-3 key numbers that directly answer the question.
-- For "is it a good investment?" questions: Give a brief opinion with 2-3 supporting reasons, not a full analysis.
-- For CEO/leadership questions: Just state the name and maybe one fact.
-- If asked to compare: Focus on 2-3 key differences, not exhaustive lists.<|im_end|>
+RULES:
+- Talk naturally like a helpful friend
+- NEVER start with labels like "Answer:" or "Response:"
+- NEVER end with signatures, dates, or sign-offs
+- Just answer directly in 2-4 casual sentences
+- Use **bold** for 1-2 key numbers only
+- Don't repeat data the user can already see<|im_end|>
 <|im_start|>user
 ${userMessage}<|im_end|>
 <|im_start|>assistant

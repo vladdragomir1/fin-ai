@@ -20,6 +20,9 @@ export interface ThinkingProgress {
 
 export type ProgressCallback = (progress: ThinkingProgress) => void;
 
+// --- Streaming Callback Type ---
+export type StreamCallback = (token: string, fullText: string) => void;
+
 // --- Chat History Configuration ---
 const MAX_HISTORY_MESSAGES = 20;     // Keep last 20 messages for context
 const MAX_HISTORY_TOKENS = 3000;     // Approx token limit for history (leaves room for RAG + response)
@@ -69,9 +72,10 @@ export const AiService = {
       console.log('Loading Local LLM...');
       this.context = await initLlama({
         model: MODEL_PATH,
-        n_ctx: 8192,   // Increased from 2048 for longer conversations (pro level)
-        n_threads: 4,     
-        n_gpu_layers: 0,  
+        n_ctx: 8192,      // Context window for longer conversations
+        n_batch: 512,     // Process 512 tokens at once (faster prompt processing)
+        n_threads: 4,     // Generation threads
+        n_gpu_layers: 0,  // CPU-only for stability
       });
 
       this.isInitialized = true;
@@ -85,14 +89,17 @@ export const AiService = {
 
   /**
    * Main function: Generate response using RAG + Local LLM
+   * NOW WITH STREAMING: Tokens are delivered as they're generated for better UX
    * @param userPrompt - Current user message
    * @param chatHistory - Previous messages for conversation context (optional)
    * @param onProgress - Callback for live progress updates (optional)
+   * @param onStream - Callback for streaming tokens as they're generated (optional)
    */
   async generateResponse(
     userPrompt: string, 
     chatHistory?: Array<{text: string, sender: 'user' | 'ai'}>,
-    onProgress?: ProgressCallback
+    onProgress?: ProgressCallback,
+    onStream?: StreamCallback
   ): Promise<string> {
     try {
       console.log(`[AI] Received query: "${userPrompt}"`);
@@ -165,39 +172,67 @@ export const AiService = {
       }
       
       console.log(`[AI] Starting LFM2 inference...`);
-      reportProgress('generating', 'Generating response...', 'This may take a moment');
+      reportProgress('generating', 'Thinking...', onStream ? 'Streaming response...' : 'This may take a moment');
       const startTime = Date.now();
       
-      // 3. Generate Answer using LFM2-1.2B-RAG
+      // Track accumulated text for streaming
+      let accumulatedText = '';
+      let firstTokenTime: number | null = null;
+      
+      // 3. Generate Answer using LFM2-1.2B-RAG with STREAMING
       // CONFIGURATION FOR LFM2: Greedy Decoding (temperature=0) as recommended
-      const result = await this.context.completion({
-        prompt: fullPrompt,
-        
-        // Output Length: Reduced to 512 for concise responses (was 1500)
-        // Most good answers fit in 200-400 tokens
-        n_predict: 512, 
-        
-        // Temperature: 0 for greedy decoding (LFM2 recommendation)
-        temperature: 0, 
-        
-        // Sampling: Focus on deterministic, high-confidence responses
-        top_k: 40,
-        top_p: 0.95,
-        
-        // Stop Tokens: ChatML format stop tokens for LFM2
-        stop: ['<|im_end|>', '<|endoftext|>'], 
-      });
+      const result = await this.context.completion(
+        {
+          prompt: fullPrompt,
+          
+          // Output Length: Reduced to 350 for faster, concise responses
+          // Most good answers fit in 200-300 tokens
+          n_predict: 350, 
+          
+          // Temperature: 0 for greedy decoding (LFM2 recommendation)
+          temperature: 0, 
+          
+          // Sampling: Focus on deterministic, high-confidence responses
+          top_k: 40,
+          top_p: 0.95,
+          
+          // Stop Tokens: ChatML format stop tokens for LFM2
+          stop: ['<|im_end|>', '<|endoftext|>'], 
+        },
+        // STREAMING CALLBACK: Called for each generated token
+        onStream ? (tokenData) => {
+          // Record time to first token (TTFT)
+          if (firstTokenTime === null) {
+            firstTokenTime = Date.now();
+            const ttft = firstTokenTime - startTime;
+            console.log(`[AI] Time to first token: ${ttft}ms`);
+          }
+          
+          // Check for abort during streaming
+          if (this.abortRequested) {
+            return;
+          }
+          
+          // Get token text from the token data
+          const tokenText = tokenData.token || '';
+          accumulatedText += tokenText;
+          
+          // Call the stream callback with the new token and full text
+          onStream(tokenText, accumulatedText.trim());
+        } : undefined
+      );
 
       // Check if abort was requested during generation
       if (this.abortRequested) {
         console.log('[AI] Abort detected after inference');
         this.isProcessing = false;
         this.abortRequested = false;
-        return '';
+        return accumulatedText.trim() || '';
       }
 
       const duration = Date.now() - startTime;
-      console.log(`[AI] Response generated in ${duration}ms`);
+      const tokensPerSec = result.timings?.predicted_per_second?.toFixed(1) || 'N/A';
+      console.log(`[AI] Response generated in ${duration}ms (${tokensPerSec} tok/s)`);
       console.log(`[AI] Response preview: ${result.text.substring(0, 100)}...`);
       
       reportProgress('complete', 'Done!', `Generated in ${(duration / 1000).toFixed(1)}s`);

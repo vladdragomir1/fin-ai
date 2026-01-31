@@ -229,7 +229,7 @@ export const AIChatScreen = () => {
     }
   };
 
-  // 5. Send Logic (With Concurrency Fix + Auto Title Generation)
+  // 5. Send Logic (With Concurrency Fix + Auto Title Generation + STREAMING)
   const handleSend = async () => {
     if (!inputText.trim() || modelStatus !== 'READY') return;
 
@@ -239,6 +239,9 @@ export const AIChatScreen = () => {
 
     const userText = inputText.trim();
     const userMsg: Message = { id: Date.now().toString(), text: userText, sender: 'user', timestamp: Date.now() };
+    
+    // Create a placeholder for the streaming AI response
+    const streamingMsgId = (Date.now() + 1).toString();
     
     // Optimistic UI Update
     setMessages(prev => [...prev, userMsg]);
@@ -277,23 +280,63 @@ export const AIChatScreen = () => {
         }
       };
       
-      const responseText = await AiService.generateResponse(userText, historyForAI, handleProgress);
+      // STREAMING: Add placeholder message immediately when tokens start flowing
+      let streamingStarted = false;
       
-      // If response is empty (aborted), don't add a message
+      // Streaming callback - updates the AI message in real-time
+      const handleStream = (_token: string, fullText: string) => {
+        // Only update if still on the same chat
+        if (activeSessionRef.current !== chatContextId) return;
+        
+        // On first token, add the streaming message placeholder
+        if (!streamingStarted) {
+          streamingStarted = true;
+          const placeholderMsg: Message = { 
+            id: streamingMsgId, 
+            text: fullText, 
+            sender: 'ai', 
+            timestamp: Date.now() 
+          };
+          setMessages(prev => [...prev, placeholderMsg]);
+          // Hide the thinking progress once streaming starts
+          setThinkingProgress(null);
+        } else {
+          // Update the existing streaming message with new text
+          setMessages(prev => prev.map(m => 
+            m.id === streamingMsgId ? { ...m, text: fullText } : m
+          ));
+        }
+      };
+      
+      const responseText = await AiService.generateResponse(userText, historyForAI, handleProgress, handleStream);
+      
+      // If response is empty (aborted), clean up
       if (!responseText) {
         console.log('[UI] Empty response (likely aborted)');
         if (activeSessionRef.current === chatContextId) {
+          // Remove the streaming message if it was added
+          if (streamingStarted) {
+            setMessages(prev => prev.filter(m => m.id !== streamingMsgId));
+          }
           setIsTyping(false);
           setThinkingProgress(null);
         }
         return;
       }
       
-      const aiMsg: Message = { id: (Date.now() + 1).toString(), text: responseText, sender: 'ai', timestamp: Date.now() };
+      // Final update to ensure the complete response is shown
+      const aiMsg: Message = { id: streamingMsgId, text: responseText, sender: 'ai', timestamp: Date.now() };
       
       // Only update UI if user is still looking at THIS chat
       if (activeSessionRef.current === chatContextId) {
-          setMessages(prev => [...prev, aiMsg]);
+          // Update the streaming message with final text (or add if streaming didn't start)
+          if (streamingStarted) {
+            setMessages(prev => prev.map(m => 
+              m.id === streamingMsgId ? aiMsg : m
+            ));
+          } else {
+            setMessages(prev => [...prev, aiMsg]);
+          }
           setIsTyping(false);
           setThinkingProgress(null);
       }
@@ -302,7 +345,7 @@ export const AIChatScreen = () => {
       setSessions(prev => {
         const updated = prev.map(s => 
           s.id === chatContextId 
-            ? { ...s, messages: [...s.messages, aiMsg], lastModified: Date.now() }
+            ? { ...s, messages: [...s.messages.filter(m => m.id !== streamingMsgId), aiMsg], lastModified: Date.now() }
             : s
         );
         updated.sort((a, b) => b.lastModified - a.lastModified);
@@ -310,21 +353,24 @@ export const AIChatScreen = () => {
         return updated;
       });
 
-      // Generate title AFTER first exchange (runs in background)
+      // Generate title AFTER first exchange (runs in background with delay to not interfere)
       if (isFirstMessage) {
-        AiService.generateChatTitle(userText, responseText).then(generatedTitle => {
-          setSessions(prev => {
-            const updated = prev.map(s => 
-              s.id === chatContextId 
-                ? { ...s, title: generatedTitle }
-                : s
-            );
-            saveSessionsToStorage(updated);
-            return updated;
+        // Delay title generation by 2 seconds to let user read the response
+        setTimeout(() => {
+          AiService.generateChatTitle(userText, responseText).then(generatedTitle => {
+            setSessions(prev => {
+              const updated = prev.map(s => 
+                s.id === chatContextId 
+                  ? { ...s, title: generatedTitle }
+                  : s
+              );
+              saveSessionsToStorage(updated);
+              return updated;
+            });
+          }).catch(err => {
+            console.warn('Failed to generate title:', err);
           });
-        }).catch(err => {
-          console.warn('Failed to generate title:', err);
-        });
+        }, 2000);
       }
 
     } catch (error) {
