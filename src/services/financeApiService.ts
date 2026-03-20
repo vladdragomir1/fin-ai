@@ -611,14 +611,14 @@ class FinanceApiService {
   // Endpoint: /v1/markets/stock/history (Mboum Finance API)
   // Supports intraday intervals: 1m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo
   // =========================================================================
-  async getHistoricalData(symbol: string, range: string = '1Y'): Promise<any[]> {
+  async getHistoricalData(symbol: string, range: string = '1Y', forceRefresh: boolean = false): Promise<any[]> {
     await this.ensureInitialized();
 
     try {
-      // 1. Try SQLite Cache (skip for intraday - too volatile)
+      // 1. Try SQLite Cache (skip for intraday - too volatile, or if forceRefresh)
       const isIntraday = range === '1D';
       
-      if (!isIntraday) {
+      if (!isIntraday && !forceRefresh) {
         let cached: any[] | null = null;
         try {
           cached = await databaseService.getHistoricalData(symbol, range);
@@ -644,7 +644,7 @@ class FinanceApiService {
       }
 
       // 3. API Call
-      console.log(`📈 Fetching Chart (${range})...`);
+      console.log(`📈 Fetching Chart (${range})${forceRefresh ? ' [FORCE REFRESH]' : ''}...`);
       
       let interval = '1d';
       if (range === '1D') interval = '5m'; // Intraday: 5-minute intervals for current day

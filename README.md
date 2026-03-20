@@ -2,20 +2,20 @@
 
 # FinanceAI
 
-Your private, offline AI Financial Analyst. Secure, fast, and on-device. It allows you to analyze stocks, ETFs and diverse financial instruments, view complex financial indicators, and chat with an intelligent assistant—anytime, anywhere, with zero data leaving your phone.
+Your private, offline-capable AI Financial Analyst. Secure, fast, and on-device. It allows you to analyze stocks and financial instruments, view complex financial indicators, and chat with an intelligent assistant—anytime, anywhere, with zero data leaving your phone.
 
 ## Features
 
 - **On-Device AI Chat**: Local LLM-powered financial assistant using LFM2-1.2B model
 - **Real-Time Market Data**: Live stock quotes, market movers, and financial metrics
-- **Advanced Charts**: Interactive stock charts powered by TradingView and Victory Native
+- **Advanced Charts**: Interactive stock charts powered by TradingView (via WebView) and custom React Native charts
 - **Market News**: Latest financial news, videos, and headlines
 - **Financial Calendars**: Track earnings, dividends, IPOs, stock splits, and economic events
 - **Technical Analysis**: SMA, RSI, MACD, ADX indicators and more
 - **Portfolio Watchlist**: Track your favorite stocks and investments
 - **Secure Authentication**: PIN and biometric protection
-- **Offline First**: Works without internet, syncs when connected
-- **Beautiful UI**: Modern design with React Native Paper
+- **Offline Capable**: Graceful fallback to cached and baseline data when offline
+- **Beautiful UI**: Custom dark design system with React Native Paper and Lucide icons
 
 ## AI & RAG Technology
 
@@ -23,7 +23,7 @@ FinanceAI leverages cutting-edge **RAG (Retrieval-Augmented Generation)** techno
 
 ### LFM2-1.2B Model
 - **Model**: LFM2-1.2B (Quantized Q8_0 format, ~1.3GB)
-- **Specialization**: Document-based Q&A, optimized for financial data
+- **Specialization**: General-purpose small language model, specialized for financial Q&A via custom RAG pipeline
 - **Runtime**: [llama.rn](https://github.com/a-ghorbani/llama.rn) - React Native LLaMA implementation
 - **Device**: Runs entirely on-device (CPU-optimized for Android)
 - **Context Window**: 8192 tokens for extended conversations
@@ -59,8 +59,9 @@ The app implements a sophisticated RAG pipeline that:
 - **TypeScript**: Type-safe development
 - **React Navigation**: Native stack and bottom tabs navigation
 - **React Native Paper 5.14.5**: Material Design UI components
-- **Victory Native 41.20.2**: Data visualization and charts
-- **@shopify/react-native-skia**: High-performance graphics
+- **lucide-react-native**: Icon library used across all screens
+- **react-native-markdown-display**: Markdown rendering for AI responses
+- **react-native-webview**: Embeds TradingView charts
 
 ### AI & ML
 - **llama.rn 0.9.0-rc.3**: On-device LLM inference
@@ -69,13 +70,14 @@ The app implements a sophisticated RAG pipeline that:
 
 ### Data & Storage
 - **react-native-quick-sqlite 8.2.7**: High-performance SQLite database
-- **@react-native-async-storage/async-storage**: Key-value storage
+- **@react-native-async-storage/async-storage**: Key-value storage and chat session persistence
 - **react-native-fs**: File system access for model storage
+- **date-fns**: Date formatting and manipulation
 
 ### Security
 - **react-native-biometrics**: Fingerprint/Face ID authentication
 - **react-native-keychain**: Secure credential storage
-- **react-native-quick-crypto 0.7.17**: Cryptographic operations
+- **react-native-quick-crypto 0.7.17**: Cryptographic operations (PBKDF2 PIN hashing)
 
 ### Network & APIs
 - **@react-native-community/netinfo**: Network connectivity monitoring
@@ -83,10 +85,12 @@ The app implements a sophisticated RAG pipeline that:
 - **TradingView**: Advanced charting integration
 
 ### Development
+- **Hermes**: JavaScript engine for React Native
 - **Jest**: Testing framework
 - **ESLint**: Code linting
 - **Babel**: JavaScript compilation
 - **Metro**: React Native bundler
+- **react-native-dotenv**: Environment variable management
 
 ## Architecture
 
@@ -104,15 +108,20 @@ The app implements a sophisticated RAG pipeline that:
 - **Offline Support**: Graceful degradation with cached data
 - **Rate Limit Protection**: Throttling and retry logic
 
-### Database Schema
+### Database Schema (SQLite)
+- **companies**: Company symbols, names, and exchange info
 - **stock_quotes**: Real-time quote cache
-- **company_overview**: Company fundamentals
-- **financial_metrics**: Key financial ratios
-- **watchlist**: User's tracked stocks
-- **market_data**: Market movers cache
-- **news_cache**: Financial news articles
-- **calendar_cache**: Event calendars
-- **chat_history**: AI conversation storage
+- **historical_data**: Historical price data by time range
+- **company_overview**: Company fundamentals and descriptions
+- **financial_metrics**: Key financial ratios (P/E, EPS, market cap, etc.)
+- **search_cache**: Cached search results
+- **stock_modules**: Module-level data cache (earnings, statements, ownership, etc.)
+- **market_data_cache**: Market movers, news, and calendar event cache
+
+### Additional Storage (AsyncStorage)
+- **Chat sessions**: AI conversation history and multi-session management
+- **Watchlist**: User's tracked stocks (via React Context)
+- **Offline quote cache**: Fallback price data with hardcoded baselines
 
 ## Supported Platforms
 

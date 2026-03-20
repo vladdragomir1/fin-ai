@@ -172,7 +172,7 @@ export const AiService = {
       }
       
       console.log(`[AI] Starting LFM2 inference...`);
-      reportProgress('generating', 'Thinking...', onStream ? 'Streaming response...' : 'This may take a moment');
+      reportProgress('generating', 'Thinking...', onStream ? 'Generating response...' : 'This may take a moment');
       const startTime = Date.now();
       
       // Track accumulated text for streaming
@@ -197,7 +197,8 @@ export const AiService = {
           top_p: 0.95,
           
           // Stop Tokens: ChatML format stop tokens for LFM2
-          stop: ['<|im_end|>', '<|endoftext|>'], 
+          // Added extra stops to prevent leaking prompt artifacts
+          stop: ['<|im_end|>', '<|endoftext|>', '### ', '**Question:**', '**Financial Data', 'RULES:', '---'], 
         },
         // STREAMING CALLBACK: Called for each generated token
         onStream ? (tokenData) => {
@@ -217,8 +218,18 @@ export const AiService = {
           const tokenText = tokenData.token || '';
           accumulatedText += tokenText;
           
-          // Call the stream callback with the new token and full text
-          onStream(tokenText, accumulatedText.trim());
+          // Quick cleanup for streaming - hide obvious leakage patterns as they appear
+          let displayText = accumulatedText.trim();
+          // Remove trailing artifacts as they form
+          displayText = displayText.replace(/\n*---\n*.*$/gs, '');
+          displayText = displayText.replace(/\n*###.*$/gs, '');
+          displayText = displayText.replace(/\n*\*\*Financial Data.*$/gs, '');
+          displayText = displayText.replace(/\n*\*\*Question:\*\*.*$/gs, '');
+          displayText = displayText.replace(/\n*\*\*Current Question.*$/gs, '');
+          displayText = displayText.replace(/\n*<\|im_.*$/gs, '');
+          
+          // Call the stream callback with the new token and cleaned full text
+          onStream(tokenText, displayText);
         } : undefined
       );
 
@@ -237,9 +248,34 @@ export const AiService = {
       
       reportProgress('complete', 'Done!', `Generated in ${(duration / 1000).toFixed(1)}s`);
 
+      // Clean up response - remove any leaked prompt artifacts
+      let cleanResponse = result.text.trim();
+      
+      // Remove common prompt leakage patterns
+      const leakagePatterns = [
+        /\n*### .*/gs,                    // Markdown headers that might be from context
+        /\n*\*\*Financial Data.*/gs,      // Financial data headers
+        /\n*\*\*Question:\*\*.*/gs,       // Question headers
+        /\n*\*\*Current Question.*/gs,    // Current question header
+        /\n*RULES:.*/gs,                  // System rules
+        /\n*---\n*.*/gs,                  // Dividers and everything after
+        /\n*<\|im_.*$/gs,                 // ChatML tokens
+        /\n*You are a friendly.*/gs,      // System prompt leakage
+        /\n*Talk naturally.*/gs,          // System prompt rules
+        /\n*NEVER start with.*/gs,        // System prompt rules
+        /\n*ONLY use data.*/gs,           // System prompt rules
+        /\n*\*\*[A-Z][a-zA-Z\s]+\*\*\s*$/g, // Bold "Title" at end of response
+        /\n*Title:\s*.*/gi,               // Title: prefix at end
+        /\n*\n[A-Z][a-zA-Z\s]{5,30}\s*$/g, // Trailing capitalized title-like text (5-30 chars)
+      ];
+      
+      for (const pattern of leakagePatterns) {
+        cleanResponse = cleanResponse.replace(pattern, '');
+      }
+      
       this.isProcessing = false; // Unlock
       this.abortRequested = false; // Reset
-      return result.text.trim();
+      return cleanResponse.trim();
 
     } catch (error) {
       this.isProcessing = false; // Unlock on error
