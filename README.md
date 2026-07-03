@@ -183,8 +183,8 @@ npm install
 Deoarece fișierul `.env` este exclus din repository, acesta trebuie creat manual în rădăcina proiectului. El conține cheile de acces la API-ul Mboum Finance (accesat prin platforma RapidAPI):
 
 ```
-FINANCIAL_API_KEY=cheia_RapidAPI
-FINANCIAL_API_HOST=host_Mboum_Finance
+FINANCIAL_API_KEY=<cheia_RapidAPI>
+FINANCIAL_API_HOST=<host_Mboum_Finance>
 ```
 
 Aceste două variabile sunt citite de serviciul `financeApiService.ts` prin `react-native-dotenv` și sunt trimise în antetele HTTP `X-RapidAPI-Key` și `X-RapidAPI-Host` la fiecare cerere către API.
