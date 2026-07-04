@@ -63,7 +63,7 @@ Aplicația implementează un pipeline RAG care:
 ### Frontend
 - **React Native 0.82.1**: framework mobil cross-platform
 - **React 19.1.1**: biblioteca de bază pentru interfață
-- **TypeScript 5.8.3**: dezvoltare cu tipare statică
+- **TypeScript 5.8.3**: dezvoltare cu tipizare statică
 - **React Navigation 7**: navigare cu native stack și bottom tabs
 - **lucide-react-native 0.554.0**: bibliotecă de iconografie folosită pe toate ecranele
 - **react-native-markdown-display 7.0.2**: randarea răspunsurilor AI în format Markdown
